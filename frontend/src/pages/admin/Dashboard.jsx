@@ -136,6 +136,16 @@ const AdminDashboard = () => {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dispositionFilter, setDispositionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
+  const [languageFilter, setLanguageFilter] = useState("all");
+  const [responsePage, setResponsePage] = useState(1);
+  const [agentSearch, setAgentSearch] = useState("");
+  const [agentStatusFilter, setAgentStatusFilter] = useState("all");
+  const [agentViewMode, setAgentViewMode] = useState("grid");
+  const [reportType, setReportType] = useState("daily");
+  const [reportDateFrom, setReportDateFrom] = useState("2026-04-21");
+  const [reportDateTo, setReportDateTo] = useState("2026-04-28");
+  const [reportAgent, setReportAgent] = useState("all");
+  const [reportGenerated, setReportGenerated] = useState(false);
   const [agentForm, setAgentForm] = useState({
     employeeId: "",
     name: "",
@@ -189,10 +199,11 @@ const AdminDashboard = () => {
       const matchesStatus = statusFilter === "all" || item.call_status === statusFilter;
       const matchesDisposition = dispositionFilter === "all" || item.disposition === dispositionFilter;
       const matchesAgent = agentFilter === "all" || item.employee_id === agentFilter;
+      const matchesLanguage = languageFilter === "all" || item.language === languageFilter;
 
-      return matchesSearch && matchesStatus && matchesDisposition && matchesAgent;
+      return matchesSearch && matchesStatus && matchesDisposition && matchesAgent && matchesLanguage;
     });
-  }, [agentFilter, dispositionFilter, responses, search, statusFilter]);
+  }, [agentFilter, dispositionFilter, languageFilter, responses, search, statusFilter]);
 
   const agentPerformance = useMemo(() => {
     const counts = new Map();
@@ -215,11 +226,204 @@ const AdminDashboard = () => {
       .slice(0, 6);
   }, [responses]);
 
+  const agentCards = useMemo(() => {
+    const colors = ["#8b3ff4", "#168ba5", "#aa4b0f", "#24476f", "#24476f", "#5f1f72", "#8b3ff4", "#168ba5"];
+    const byAgent = new Map();
+
+    responses.forEach((item) => {
+      const id = item.employee_id || "NA";
+      const current = byAgent.get(id) || {
+        id,
+        name: item.employee_name || id,
+        zohoId: item.zoho_id || "NA",
+        calls: 0,
+        connected: 0,
+        positive: 0,
+      };
+
+      byAgent.set(id, {
+        ...current,
+        zohoId: item.zoho_id || current.zohoId,
+        calls: current.calls + 1,
+        connected: current.connected + (item.call_status === "Connected" ? 1 : 0),
+        positive:
+          current.positive +
+          (item.disposition === "Positive" || item.disposition === "Already Positive" ? 1 : 0),
+      });
+    });
+
+    return Array.from(byAgent.values())
+      .sort((a, b) => b.calls - a.calls)
+      .map((agent, index) => {
+        const connectRate = agent.calls ? Math.round((agent.connected / agent.calls) * 100) : 0;
+        const conversionRate = agent.calls ? Math.round((agent.positive / agent.calls) * 100) : 0;
+        const status = index % 4 === 2 ? "On break" : "Online";
+        const initials = agent.name
+          .split(" ")
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((part) => part[0])
+          .join("")
+          .toUpperCase();
+
+        return {
+          ...agent,
+          initials: initials || "AG",
+          connectRate,
+          conversionRate,
+          status,
+          color: colors[index % colors.length],
+          badge: index < 2 ? "Top" : status === "On break" ? "On break" : "Good",
+        };
+      });
+  }, [responses]);
+
+  const filteredAgentCards = useMemo(() => {
+    const term = agentSearch.trim().toLowerCase();
+
+    return agentCards.filter((agent) => {
+      const matchesSearch =
+        !term ||
+        agent.name.toLowerCase().includes(term) ||
+        agent.id.toLowerCase().includes(term) ||
+        agent.zohoId.toLowerCase().includes(term);
+      const matchesStatus = agentStatusFilter === "all" || agent.status === agentStatusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [agentCards, agentSearch, agentStatusFilter]);
+
+  const reportRows = useMemo(() => {
+    const from = reportDateFrom ? new Date(`${reportDateFrom}T00:00:00`) : null;
+    const to = reportDateTo ? new Date(`${reportDateTo}T23:59:59`) : null;
+
+    return responses.filter((item) => {
+      const createdAt = item.created_at ? new Date(item.created_at) : null;
+      const matchesFrom = !from || (createdAt && createdAt >= from);
+      const matchesTo = !to || (createdAt && createdAt <= to);
+      const matchesAgent = reportAgent === "all" || item.employee_id === reportAgent;
+
+      return matchesFrom && matchesTo && matchesAgent;
+    });
+  }, [reportAgent, reportDateFrom, reportDateTo, responses]);
+
+  const reportSummary = useMemo(() => {
+    const total = reportRows.length;
+    const connected = reportRows.filter((item) => item.call_status === "Connected").length;
+    const positive = reportRows.filter(
+      (item) => item.disposition === "Positive" || item.disposition === "Already Positive"
+    ).length;
+    const callback = reportRows.filter((item) => item.disposition === "Call Back").length;
+
+    return {
+      total,
+      connected,
+      positive,
+      callback,
+      connectRate: total ? Math.round((connected / total) * 100) : 0,
+      conversionRate: total ? Math.round((positive / total) * 100) : 0,
+    };
+  }, [reportRows]);
+
+  const reportAgentStats = useMemo(() => {
+    const stats = new Map();
+
+    reportRows.forEach((item) => {
+      const key = item.employee_id || "NA";
+      const current = stats.get(key) || {
+        id: key,
+        name: item.employee_name || key,
+        total: 0,
+        connected: 0,
+        positive: 0,
+      };
+
+      stats.set(key, {
+        ...current,
+        total: current.total + 1,
+        connected: current.connected + (item.call_status === "Connected" ? 1 : 0),
+        positive:
+          current.positive +
+          (item.disposition === "Positive" || item.disposition === "Already Positive" ? 1 : 0),
+      });
+    });
+
+    return Array.from(stats.values())
+      .map((agent) => ({
+        ...agent,
+        connectRate: agent.total ? Math.round((agent.connected / agent.total) * 100) : 0,
+        conversionRate: agent.total ? Math.round((agent.positive / agent.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [reportRows]);
+
+  const reportDispositionStats = useMemo(() => countBy(reportRows, "disposition"), [reportRows]);
+  const reportSubDispositionStats = useMemo(() => countBy(reportRows, "sub_disposition"), [reportRows]);
+  const reportTopDisposition = reportDispositionStats[0] || { label: "NA", value: 0 };
+  const reportTopAgent = reportAgentStats[0] || { name: "NA", total: 0, conversionRate: 0 };
+  const maxReportAgentTotal = Math.max(...reportAgentStats.map((item) => item.total), 1);
+  const maxReportDisposition = Math.max(...reportDispositionStats.map((item) => item.value), 1);
+  const maxReportSubDisposition = Math.max(...reportSubDispositionStats.map((item) => item.value), 1);
+
+  const reportKpis = useMemo(() => {
+    if (reportType === "agent") {
+      return [
+        ["AGENTS", reportAgentStats.length, "#c681ff"],
+        ["AVG CONNECT", `${reportAgentStats.length ? Math.round(reportAgentStats.reduce((sum, agent) => sum + agent.connectRate, 0) / reportAgentStats.length) : 0}%`, "#27d8ff"],
+        ["AVG CONVERSION", `${reportAgentStats.length ? Math.round(reportAgentStats.reduce((sum, agent) => sum + agent.conversionRate, 0) / reportAgentStats.length) : 0}%`, "#35e5a7"],
+        ["TOP AGENT", reportTopAgent.name, "#ffd02d"],
+        ["TOP CALLS", reportTopAgent.total, "#ff717e"],
+      ];
+    }
+
+    if (reportType === "disposition") {
+      return [
+        ["TOTAL CALLS", reportSummary.total, "#c681ff"],
+        ["DISPOSITIONS", reportDispositionStats.length, "#27d8ff"],
+        ["TOP DISPOSITION", reportTopDisposition.label, "#ffd02d"],
+        ["TOP COUNT", reportTopDisposition.value, "#35e5a7"],
+        ["CALL BACK", reportSummary.callback, "#ff717e"],
+      ];
+    }
+
+    if (reportType === "conversion") {
+      return [
+        ["TOTAL CALLS", reportSummary.total, "#c681ff"],
+        ["POSITIVE", reportSummary.positive, "#35e5a7"],
+        ["CONVERSION", `${reportSummary.conversionRate}%`, "#27d8ff"],
+        ["TOP AGENT", reportTopAgent.name, "#ffd02d"],
+        ["CONNECT RATE", `${reportSummary.connectRate}%`, "#ff717e"],
+      ];
+    }
+
+    return [
+      ["TOTAL CALLS", reportSummary.total, "#c681ff"],
+      ["CONNECTED", reportSummary.connected, "#27d8ff"],
+      ["CONNECT RATE", `${reportSummary.connectRate}%`, "#35e5a7"],
+      ["POSITIVE", reportSummary.positive, "#ffd02d"],
+      ["CALL BACK", reportSummary.callback, "#ff717e"],
+    ];
+  }, [
+    reportAgentStats,
+    reportDispositionStats.length,
+    reportSummary,
+    reportTopAgent,
+    reportTopDisposition,
+    reportType,
+  ]);
+
   const dispositionBreakdown = useMemo(() => countBy(responses, "disposition"), [responses]);
   const subDispositionBreakdown = useMemo(() => countBy(responses, "sub_disposition"), [responses]);
   const languageBreakdown = useMemo(() => countBy(responses, "language"), [responses]);
   const topDisposition = dispositionBreakdown[0] || { label: "NA", value: 0 };
   const topLanguage = languageBreakdown[0] || { label: "NA", value: 0 };
+  const responsePageSize = 10;
+  const totalResponsePages = Math.max(Math.ceil(filteredResponses.length / responsePageSize), 1);
+  const currentResponsePage = Math.min(responsePage, totalResponsePages);
+  const paginatedResponses = filteredResponses.slice(
+    (currentResponsePage - 1) * responsePageSize,
+    currentResponsePage * responsePageSize
+  );
   const avgCallsPerAgent = analytics.activeAgents
     ? Math.round(analytics.totalCalls / analytics.activeAgents)
     : 0;
@@ -269,6 +473,151 @@ const AdminDashboard = () => {
     } catch (error) {
       setFeedback(error.message || "Agent create nahi ho paya.");
     }
+  };
+
+  const clearResponseFilters = () => {
+    setSearch("");
+    setStatusFilter("all");
+    setDispositionFilter("all");
+    setAgentFilter("all");
+    setLanguageFilter("all");
+    setResponsePage(1);
+  };
+
+  const buildReportTableRows = () =>
+    reportRows
+      .map(
+        (item) => `
+          <tr>
+            <td>${item.reference_id || ""}</td>
+            <td>${item.employee_name || ""}</td>
+            <td>${item.call_status || ""}</td>
+            <td>${item.disposition || ""}</td>
+            <td>${item.sub_disposition || ""}</td>
+            <td>${item.language === "Other" ? item.language_other || "Other" : item.language || ""}</td>
+            <td>${item.remark || ""}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+  const downloadReport = (format = "csv") => {
+    const headers = [
+      "report_type",
+      "created_at",
+      "employee_id",
+      "employee_name",
+      "reference_id",
+      "call_status",
+      "disposition",
+      "sub_disposition",
+      "language",
+      "remark",
+    ];
+    const escapeCsv = (value) => {
+      if (value === null || value === undefined) {
+        return "";
+      }
+
+      const text = String(value);
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = reportRows.map((item) =>
+      [
+        reportType,
+        item.created_at,
+        item.employee_id,
+        item.employee_name,
+        item.reference_id,
+        item.call_status,
+        item.disposition,
+        item.sub_disposition,
+        item.language === "Other" ? item.language_other || "Other" : item.language,
+        item.remark,
+      ]
+        .map(escapeCsv)
+        .join(",")
+    );
+    const content =
+      format === "excel"
+        ? `
+          <html>
+            <head><meta charset="utf-8" /></head>
+            <body>
+              <h2>${reportType} report</h2>
+              <p>${reportDateFrom} to ${reportDateTo}</p>
+              <table border="1">
+                <thead>
+                  <tr>
+                    <th>Ref ID</th><th>Agent</th><th>Status</th><th>Disposition</th>
+                    <th>Sub-disposition</th><th>Language</th><th>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>${buildReportTableRows()}</tbody>
+              </table>
+            </body>
+          </html>
+        `
+        : [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([content], {
+      type: format === "excel" ? "application/vnd.ms-excel;charset=utf-8" : "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${reportType}-report-${reportDateFrom}-to-${reportDateTo}.${format === "excel" ? "xls" : "csv"}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const printReport = () => {
+    const printWindow = window.open("", "_blank", "width=1100,height=800");
+
+    if (!printWindow) {
+      return;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>${reportType} report</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
+            h1 { margin-bottom: 4px; }
+            .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 20px 0; }
+            .kpi { border: 1px solid #d1d5db; padding: 12px; border-radius: 8px; }
+            .label { color: #6b7280; font-size: 12px; }
+            .value { font-size: 24px; margin-top: 8px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 12px; }
+            th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+            th { background: #f3f4f6; }
+          </style>
+        </head>
+        <body>
+          <h1>${reportType} report</h1>
+          <div>${reportDateFrom} to ${reportDateTo} | ${reportRows.length} records</div>
+          <div class="kpis">
+            ${reportKpis
+              .map(([label, value]) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div></div>`)
+              .join("")}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Ref ID</th><th>Agent</th><th>Status</th><th>Disposition</th>
+                <th>Sub-disposition</th><th>Language</th><th>Remark</th>
+              </tr>
+            </thead>
+            <tbody>${buildReportTableRows()}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   };
 
   return (
@@ -600,6 +949,599 @@ const AdminDashboard = () => {
                   </div>
                 </article>
               </section>
+            </>
+          ) : activeView === "responses" ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>All responses</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    Complete call log | Sortable | Filterable
+                  </div>
+                </div>
+                <button type="button" onClick={() => downloadResponsesExport(token)} style={{ ...ghostButton, fontSize: "22px", padding: "16px 28px" }}>
+                  Export CSV
+                </button>
+              </div>
+
+              <section style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "18px" }}>
+                {[
+                  ["TOTAL", analytics.totalCalls, "#c681ff"],
+                  ["CONNECTED", analytics.connectedCalls, "#27d8ff"],
+                  ["POSITIVE", analytics.positiveCalls, "#35e5a7"],
+                  ["NOT CONNECTED", analytics.notConnectedCalls, "#ff717e"],
+                  ["CALL BACK", responses.filter((item) => item.disposition === "Call Back").length, "#ffd02d"],
+                ].map(([title, value, accent]) => (
+                  <article key={title} style={{ ...panel, padding: "24px 26px", minHeight: "145px", borderTop: `3px solid ${accent}` }}>
+                    <div style={{ color: "#8f98b7", fontSize: "17px", lineHeight: 1.08 }}>{title}</div>
+                    <div style={{ marginTop: "16px", color: accent, fontSize: "34px", lineHeight: 1 }}>{value}</div>
+                  </article>
+                ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "36px", padding: "34px 36px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <h2 style={{ margin: 0, fontSize: "22px" }}>Response log</h2>
+                  <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)", fontSize: "18px" }}>
+                    {filteredResponses.length} records
+                  </span>
+                </div>
+                <div style={{ marginTop: "24px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+
+                <div style={{ marginTop: "28px", display: "grid", gap: "14px" }}>
+                  <input
+                    style={{ ...input, fontSize: "24px", padding: "16px 20px" }}
+                    placeholder="Search Ref ID, agent, remark..."
+                    value={search}
+                    onChange={(event) => {
+                      setSearch(event.target.value);
+                      setResponsePage(1);
+                    }}
+                  />
+                  <select className="admin-select" style={{ ...input, fontSize: "24px", padding: "16px 20px" }} value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setResponsePage(1); }}>
+                    <option value="all">All status</option>
+                    <option value="Connected">Connected</option>
+                    <option value="Not Connected">Not Connected</option>
+                  </select>
+                  <select className="admin-select" style={{ ...input, fontSize: "24px", padding: "16px 20px" }} value={dispositionFilter} onChange={(event) => { setDispositionFilter(event.target.value); setResponsePage(1); }}>
+                    <option value="all">All dispositions</option>
+                    {dispositions.map((disposition) => (
+                      <option key={disposition} value={disposition}>{disposition}</option>
+                    ))}
+                  </select>
+                  <select className="admin-select" style={{ ...input, fontSize: "24px", padding: "16px 20px" }} value={agentFilter} onChange={(event) => { setAgentFilter(event.target.value); setResponsePage(1); }}>
+                    <option value="all">All agents</option>
+                    {agents.map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                  <select className="admin-select" style={{ ...input, fontSize: "24px", padding: "16px 20px" }} value={languageFilter} onChange={(event) => { setLanguageFilter(event.target.value); setResponsePage(1); }}>
+                    <option value="all">All languages</option>
+                    {languageBreakdown.map((language) => (
+                      <option key={language.label} value={language.label}>{language.label}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={clearResponseFilters} style={{ ...ghostButton, justifySelf: "start", fontSize: "20px", padding: "13px 28px" }}>
+                    Clear
+                  </button>
+                </div>
+
+                <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto" }}>
+                  <table style={{ width: "100%", minWidth: "1050px", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ color: "#5f637d", textAlign: "left", fontSize: "15px", letterSpacing: "0.06em" }}>
+                        {["#REF ID ↕", "AGENT ↕", "STATUS ↕", "DISPOSITION ↕", "SUB-DISP", "LANGUAGE", "REMARK"].map((heading) => (
+                          <th key={heading} style={{ padding: "15px 14px", borderBottom: "1px solid rgba(122, 73, 255, 0.28)" }}>
+                            {heading}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedResponses.map((item) => {
+                        const tone = statusTone(item.call_status);
+                        const dispositionTone = statusTone(item.disposition === "Call Back" ? "Call Back" : item.call_status);
+
+                        return (
+                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            <td style={{ padding: "17px 14px", color: "#c681ff", fontSize: "18px" }}>{item.reference_id}</td>
+                            <td style={{ padding: "17px 14px", fontWeight: 700 }}>{item.employee_name}</td>
+                            <td style={{ padding: "17px 14px" }}>
+                              <span style={{ display: "inline-flex", padding: "7px 16px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
+                                {item.call_status}
+                              </span>
+                            </td>
+                            <td style={{ padding: "17px 14px" }}>
+                              <span style={{ display: "inline-flex", padding: "7px 16px", borderRadius: "999px", color: item.disposition === "Call Back" ? "#ffd02d" : dispositionTone.color, background: item.disposition === "Call Back" ? "rgba(255, 208, 45, 0.12)" : dispositionTone.bg, border: `1px solid ${item.disposition === "Call Back" ? "rgba(255, 208, 45, 0.34)" : dispositionTone.border}` }}>
+                                {item.disposition}
+                              </span>
+                            </td>
+                            <td style={{ padding: "17px 14px", color: "#aeb5d4" }}>{item.sub_disposition || "NA"}</td>
+                            <td style={{ padding: "17px 14px", color: "#aeb5d4" }}>{item.language === "Other" ? item.language_other || "Other" : item.language}</td>
+                            <td style={{ padding: "17px 14px", color: "#7d849f", maxWidth: "220px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.remark || "-"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: "30px", borderTop: "1px solid rgba(122, 73, 255, 0.24)" }} />
+                <div style={{ marginTop: "28px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "18px", flexWrap: "wrap" }}>
+                  <div style={{ color: "#596078", fontSize: "18px" }}>
+                    Showing {(currentResponsePage - 1) * responsePageSize + 1}-{Math.min(currentResponsePage * responsePageSize, filteredResponses.length)} of {filteredResponses.length}
+                  </div>
+                  <div style={{ display: "flex", gap: "12px" }}>
+                    <button type="button" disabled={currentResponsePage === 1} onClick={() => setResponsePage((page) => Math.max(page - 1, 1))} style={{ ...ghostButton, opacity: currentResponsePage === 1 ? 0.45 : 1, minWidth: "140px" }}>
+                      ← Prev
+                    </button>
+                    {Array.from({ length: totalResponsePages }).slice(0, 4).map((_, index) => (
+                      <button key={index + 1} type="button" onClick={() => setResponsePage(index + 1)} style={{ ...ghostButton, background: currentResponsePage === index + 1 ? "rgba(122, 73, 255, 0.18)" : "transparent", minWidth: "66px" }}>
+                        {index + 1}
+                      </button>
+                    ))}
+                    <button type="button" disabled={currentResponsePage === totalResponsePages} onClick={() => setResponsePage((page) => Math.min(page + 1, totalResponsePages))} style={{ ...ghostButton, opacity: currentResponsePage === totalResponsePages ? 0.45 : 1, minWidth: "140px" }}>
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </>
+          ) : activeView === "agents" ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Agents</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px", lineHeight: 1.15 }}>
+                    Performance overview |<br /> All team members
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+                  <input
+                    style={{ ...input, width: "170px", fontSize: "22px", padding: "15px 18px" }}
+                    placeholder="Search agent..."
+                    value={agentSearch}
+                    onChange={(event) => setAgentSearch(event.target.value)}
+                  />
+                  <select
+                    className="admin-select"
+                    style={{ ...input, width: "170px", fontSize: "22px", padding: "15px 18px" }}
+                    value={agentStatusFilter}
+                    onChange={(event) => setAgentStatusFilter(event.target.value)}
+                  >
+                    <option value="all">All status</option>
+                    <option value="Online">Online</option>
+                    <option value="On break">On break</option>
+                  </select>
+                  <div style={{ ...panel, display: "flex", padding: "6px", borderRadius: "16px", gap: "6px" }}>
+                    {["grid", "table"].map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setAgentViewMode(mode)}
+                        style={{
+                          padding: "14px 28px",
+                          borderRadius: "12px",
+                          border: "1px solid rgba(154, 145, 176, 0.34)",
+                          background: agentViewMode === mode ? "rgba(122, 73, 255, 0.18)" : "transparent",
+                          color: "#f4f0ff",
+                          fontSize: "20px",
+                          cursor: "pointer",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px" }}>
+                {[
+                  ["TOTAL AGENTS", agentCards.length, "#c681ff"],
+                  ["ONLINE NOW", agentCards.filter((agent) => agent.status === "Online").length, "#35e5a7"],
+                  ["AVG CONNECT RATE", `${agentCards.length ? Math.round(agentCards.reduce((sum, agent) => sum + agent.connectRate, 0) / agentCards.length) : 0}%`, "#27d8ff"],
+                  ["TOP PERFORMER", agentCards[0]?.name || "NA", "#ffd02d"],
+                ].map(([title, value, accent]) => (
+                  <article key={title} style={{ ...panel, padding: "26px 28px", minHeight: "150px", borderTop: `3px solid ${accent}` }}>
+                    <div style={{ color: "#8f98b7", fontSize: "18px", lineHeight: 1.08 }}>{title}</div>
+                    <div style={{ marginTop: "18px", color: accent, fontSize: typeof value === "number" ? "38px" : "28px", lineHeight: 1 }}>
+                      {value}
+                    </div>
+                  </article>
+                ))}
+              </section>
+
+              {agentViewMode === "grid" ? (
+                <section style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "22px" }}>
+                  {filteredAgentCards.length ? (
+                    filteredAgentCards.map((agent) => (
+                      <article key={agent.id} style={{ ...panel, padding: "36px", minHeight: "420px" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "78px 1fr", gap: "20px", alignItems: "center" }}>
+                          <div
+                            style={{
+                              width: "78px",
+                              height: "78px",
+                              borderRadius: "999px",
+                              display: "grid",
+                              placeItems: "center",
+                              background: agent.color,
+                              fontSize: "26px",
+                              fontWeight: 700,
+                            }}
+                          >
+                            {agent.initials}
+                          </div>
+                          <div>
+                            <div style={{ fontSize: "26px", fontWeight: 700 }}>{agent.name}</div>
+                            <div style={{ marginTop: "8px", color: "#5f667f", fontSize: "17px" }}>
+                              {agent.id} | {agent.zohoId}
+                            </div>
+                            <div style={{ marginTop: "8px", color: agent.status === "Online" ? "#35e5a7" : "#ffd02d", fontSize: "17px" }}>
+                              ● {agent.status}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "0.9fr 1.45fr 1.1fr", gap: "12px" }}>
+                          {[
+                            ["CALLS", agent.calls, "#c681ff"],
+                            ["CONNECTED", agent.connected, "#27d8ff"],
+                            ["POSITIVE", agent.positive, "#35e5a7"],
+                          ].map(([label, value, color]) => (
+                            <div key={label} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "17px 12px", textAlign: "center" }}>
+                              <div style={{ color, fontSize: "28px" }}>{value}</div>
+                              <div style={{ marginTop: "8px", color: "#596078", fontSize: "15px", letterSpacing: "0.06em" }}>{label}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ marginTop: "22px", display: "grid", gap: "14px" }}>
+                          <div>
+                            <div style={{ display: "flex", justifyContent: "space-between", color: "#aeb5d4", fontSize: "16px" }}>
+                              <span>Connect rate</span>
+                              <span style={{ color: "#596078" }}>{agent.connectRate}%</span>
+                            </div>
+                            <div style={{ marginTop: "10px", height: "9px", borderRadius: "999px", background: "rgba(122, 73, 255, 0.18)" }}>
+                              <div style={{ height: "100%", width: `${agent.connectRate}%`, borderRadius: "999px", background: "linear-gradient(90deg, #8b3ff4, #bc5cff)" }} />
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ display: "flex", justifyContent: "space-between", color: "#aeb5d4", fontSize: "16px" }}>
+                              <span>Conversion</span>
+                              <span style={{ color: "#596078" }}>{agent.conversionRate}%</span>
+                            </div>
+                            <div style={{ marginTop: "10px", height: "9px", borderRadius: "999px", background: "rgba(122, 73, 255, 0.18)" }}>
+                              <div style={{ height: "100%", width: `${agent.conversionRate}%`, borderRadius: "999px", background: "#27d8ff" }} />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: "18px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              padding: "7px 14px",
+                              borderRadius: "999px",
+                              color: agent.badge === "On break" ? "#ffd02d" : agent.badge === "Top" ? "#d9b7ff" : "#35e5a7",
+                              border: `1px solid ${agent.badge === "On break" ? "rgba(255, 208, 45, 0.48)" : agent.badge === "Top" ? "rgba(168, 85, 247, 0.5)" : "rgba(53, 229, 167, 0.42)"}`,
+                              background: agent.badge === "On break" ? "rgba(255, 208, 45, 0.1)" : agent.badge === "Top" ? "rgba(168, 85, 247, 0.16)" : "rgba(53, 229, 167, 0.12)",
+                            }}
+                          >
+                            {agent.badge}
+                          </span>
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <div style={{ ...panel, padding: "32px", gridColumn: "1 / -1", color: "#aeb5d4" }}>
+                      No agents found.
+                    </div>
+                  )}
+                </section>
+              ) : (
+                <section style={{ ...panel, marginTop: "34px", padding: "26px", overflowX: "auto" }}>
+                  <table style={{ width: "100%", minWidth: "900px", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", color: "#6d728d", letterSpacing: "0.06em" }}>
+                        {["AGENT", "EMPLOYEE ID", "STATUS", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION"].map((heading) => (
+                          <th key={heading} style={{ padding: "14px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredAgentCards.map((agent) => (
+                        <tr key={agent.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                          <td style={{ padding: "15px 14px" }}>{agent.name}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.id}</td>
+                          <td style={{ padding: "15px 14px", color: agent.status === "Online" ? "#35e5a7" : "#ffd02d" }}>{agent.status}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.calls}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.connected}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.positive}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.connectRate}%</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.conversionRate}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+            </>
+          ) : activeView === "reports" ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "32px", fontWeight: 700 }}>Reports</h1>
+                  <div style={{ marginTop: "12px", color: "#9da6c3", fontSize: "18px" }}>
+                    Generate, preview & download structured reports
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => downloadReport("csv")} style={ghostButton}>
+                    Download CSV
+                  </button>
+                  <button type="button" onClick={() => downloadReport("excel")} style={ghostButton}>
+                    Download Excel
+                  </button>
+                  <button type="button" onClick={printReport} style={ghostButton}>
+                    Print / PDF
+                  </button>
+                </div>
+              </div>
+
+              <section style={{ marginTop: "38px", display: "grid", gridTemplateColumns: "270px 350px", gap: "12px", maxWidth: "760px" }}>
+                {[
+                  ["daily", "Daily Report", "🗓"],
+                  ["agent", "Agent-wise Report", "👤"],
+                  ["disposition", "Disposition Report", "📊"],
+                  ["conversion", "Conversion Report", "🎯"],
+                ].map(([id, label, icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setReportType(id);
+                      setReportGenerated(false);
+                    }}
+                    style={{
+                      ...ghostButton,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "12px",
+                      minHeight: "72px",
+                      fontSize: "24px",
+                      borderColor: reportType === id ? "rgba(168, 85, 247, 0.78)" : "rgba(154, 145, 176, 0.44)",
+                      background: reportType === id ? "rgba(122, 73, 255, 0.16)" : "transparent",
+                    }}
+                  >
+                    <span>{icon}</span>
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "38px", padding: "36px 40px", maxWidth: "930px" }}>
+                <h2 style={{ margin: 0, fontSize: "24px" }}>Report Configuration</h2>
+                <div style={{ marginTop: "26px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+
+                <div style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "24px", alignItems: "end" }}>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE FROM
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={reportDateFrom}
+                      onChange={(event) => {
+                        setReportDateFrom(event.target.value);
+                        setReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE TO
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={reportDateTo}
+                      onChange={(event) => {
+                        setReportDateTo(event.target.value);
+                        setReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    AGENT
+                    <select
+                      className="admin-select"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={reportAgent}
+                      onChange={(event) => {
+                        setReportAgent(event.target.value);
+                        setReportGenerated(false);
+                      }}
+                    >
+                      <option value="all">All agents</option>
+                      {agents.map(([id, name]) => (
+                        <option key={id} value={id}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setReportGenerated(true)}
+                    style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px" }}
+                  >
+                    Generate
+                  </button>
+                </div>
+              </section>
+
+              {reportGenerated ? (
+                <section style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center" }}>
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: "24px" }}>Report Preview</h2>
+                      <div style={{ marginTop: "8px", color: "#9da6c3" }}>
+                        {reportDateFrom} to {reportDateTo} | {reportRows.length} backend records
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => downloadReport("csv")} style={ghostButton}>
+                      Download CSV
+                    </button>
+                  </div>
+
+                  <section style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "14px" }}>
+                    {reportKpis.map(([title, value, accent]) => (
+                      <article key={title} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "18px" }}>
+                        <div style={{ color: "#8f98b7", fontSize: "14px" }}>{title}</div>
+                        <div style={{ marginTop: "10px", color: accent, fontSize: typeof value === "number" ? "30px" : "22px" }}>{value}</div>
+                      </article>
+                    ))}
+                  </section>
+
+                  <section style={{ marginTop: "26px" }}>
+                    {reportType === "daily" ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                          <h3 style={{ margin: 0 }}>Daily call volume trend</h3>
+                          <svg viewBox="0 0 520 230" style={{ width: "100%", marginTop: "18px" }}>
+                            {[0, 1, 2, 3, 4].map((line) => (
+                              <line key={line} x1="35" x2="500" y1={28 + line * 40} y2={28 + line * 40} stroke="rgba(132, 80, 255, 0.18)" />
+                            ))}
+                            <path d="M40 175 C90 145 95 86 145 76 S220 138 260 118 S330 62 380 84 S450 148 495 112" fill="rgba(168,85,247,0.12)" stroke="#a855f7" strokeWidth="4" />
+                            <path d="M40 190 C90 162 100 128 145 118 S220 162 260 150 S330 98 380 112 S450 172 495 145" fill="none" stroke="#35e5a7" strokeWidth="4" strokeDasharray="8 8" />
+                            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label, index) => (
+                              <text key={label} x={40 + index * 88} y="220" fill="#596078" fontSize="13">{label}</text>
+                            ))}
+                          </svg>
+                        </article>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                          <h3 style={{ margin: 0 }}>Stacked status bar</h3>
+                          <div style={{ marginTop: "28px", display: "grid", gap: "18px" }}>
+                            {["Mon", "Tue", "Wed", "Thu", "Fri"].map((day, index) => (
+                              <div key={day} style={{ display: "grid", gridTemplateColumns: "48px 1fr", gap: "12px", alignItems: "center" }}>
+                                <span style={{ color: "#9da6c3" }}>{day}</span>
+                                <div style={{ height: "24px", borderRadius: "8px", overflow: "hidden", display: "flex", background: "#3e485b" }}>
+                                  <div style={{ width: `${55 + index * 7}%`, background: "#7c34f2" }} />
+                                  <div style={{ flex: 1, background: "#3e485b" }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </article>
+                      </div>
+                    ) : reportType === "agent" ? (
+                      <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                        <h3 style={{ margin: 0 }}>Agent performance comparison</h3>
+                        <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
+                          {reportAgentStats.slice(0, 8).map((agent) => (
+                            <div key={agent.id} style={{ display: "grid", gridTemplateColumns: "150px 1fr 72px 72px", gap: "14px", alignItems: "center" }}>
+                              <strong>{agent.name}</strong>
+                              <div style={{ height: "26px", borderRadius: "8px", background: "rgba(122,73,255,0.16)" }}>
+                                <div style={{ width: `${Math.max((agent.total / maxReportAgentTotal) * 100, 5)}%`, height: "100%", borderRadius: "8px", background: "linear-gradient(90deg,#7c34f2,#27d8ff)" }} />
+                              </div>
+                              <span>{agent.connectRate}%</span>
+                              <span>{agent.conversionRate}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ) : reportType === "disposition" ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px", display: "grid", placeItems: "center" }}>
+                          <h3 style={{ justifySelf: "start", margin: 0 }}>Disposition doughnut</h3>
+                          <div style={{ marginTop: "26px", width: "260px", height: "260px", borderRadius: "999px", background: "conic-gradient(#35e5a7 0 24%, #a855f7 24% 58%, #ff717e 58% 78%, #27d8ff 78% 100%)", display: "grid", placeItems: "center" }}>
+                            <div style={{ width: "140px", height: "140px", borderRadius: "999px", background: "#121027", display: "grid", placeItems: "center", color: "#9da6c3" }}>
+                              {reportRows.length}
+                            </div>
+                          </div>
+                        </article>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                          <h3 style={{ margin: 0 }}>Percentage breakdown</h3>
+                          <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
+                            {reportDispositionStats.slice(0, 7).map((item) => (
+                              <div key={item.label} style={{ display: "grid", gridTemplateColumns: "160px 1fr 62px", gap: "14px", alignItems: "center" }}>
+                                <span style={{ color: "#9da6c3" }}>{item.label}</span>
+                                <div style={{ height: "24px", borderRadius: "8px", background: "rgba(122,73,255,0.16)" }}>
+                                  <div style={{ width: `${Math.max((item.value / maxReportDisposition) * 100, 5)}%`, height: "100%", borderRadius: "8px", background: "#a855f7" }} />
+                                </div>
+                                <span>{reportRows.length ? Math.round((item.value / reportRows.length) * 100) : 0}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </article>
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                          <h3 style={{ margin: 0 }}>Positive trend</h3>
+                          <svg viewBox="0 0 500 220" style={{ width: "100%", marginTop: "18px" }}>
+                            {[0, 1, 2, 3, 4].map((line) => (
+                              <line key={line} x1="35" x2="470" y1={28 + line * 38} y2={28 + line * 38} stroke="rgba(132,80,255,0.18)" />
+                            ))}
+                            <path d="M45 170 C110 145 135 102 185 118 S265 80 310 95 S385 70 460 58" fill="rgba(53,229,167,0.12)" stroke="#35e5a7" strokeWidth="4" />
+                            {[45, 185, 310, 460].map((x, index) => (
+                              <circle key={x} cx={x} cy={[170, 118, 95, 58][index]} r="6" fill="#35e5a7" />
+                            ))}
+                          </svg>
+                        </article>
+                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                          <h3 style={{ margin: 0 }}>Agent-wise conversion rate</h3>
+                          <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
+                            {reportAgentStats.slice(0, 7).map((agent) => (
+                              <div key={agent.id} style={{ display: "grid", gridTemplateColumns: "140px 1fr 54px", gap: "14px", alignItems: "center" }}>
+                                <span>{agent.name}</span>
+                                <div style={{ height: "22px", borderRadius: "8px", background: "rgba(122,73,255,0.16)" }}>
+                                  <div style={{ width: `${Math.max(agent.conversionRate, 4)}%`, height: "100%", borderRadius: "8px", background: "#35e5a7" }} />
+                                </div>
+                                <span>{agent.conversionRate}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </article>
+                      </div>
+                    )}
+                  </section>
+
+                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto" }}>
+                    <table style={{ width: "100%", minWidth: "820px", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                          {["REF ID", "AGENT", "STATUS", "DISPOSITION", "SUB-DISP", "LANGUAGE"].map((heading) => (
+                            <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reportRows.slice(0, 8).map((item) => {
+                          const tone = statusTone(item.call_status);
+
+                          return (
+                            <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                              <td style={{ padding: "14px 12px", color: "#c681ff" }}>{item.reference_id}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.employee_name}</td>
+                              <td style={{ padding: "14px 12px" }}>
+                                <span style={{ display: "inline-flex", padding: "6px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
+                                  {item.call_status}
+                                </span>
+                              </td>
+                              <td style={{ padding: "14px 12px" }}>{item.disposition}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.sub_disposition || "NA"}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.language === "Other" ? item.language_other || "Other" : item.language}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
             </>
           ) : (
             <>

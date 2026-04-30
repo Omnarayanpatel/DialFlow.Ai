@@ -121,7 +121,7 @@ const Register = ({ onSwitchToLogin, onAuthSuccess }) => {
           <input
             style={inputStyle}
             type="text"
-            placeholder="Employee ID e.g. AM21612448"
+            placeholder="Employee ID"
             value={form.employeeId}
             onChange={(event) => handleChange("employeeId", event.target.value)}
           />
@@ -152,7 +152,7 @@ const Register = ({ onSwitchToLogin, onAuthSuccess }) => {
             <input
               style={{ ...inputStyle, border: "1px solid #7d3cff" }}
               type="password"
-              placeholder="Admin Passcode (e.g. D_AI_AVY_2026)"
+              placeholder="Admin Passcode"
               value={form.adminCode}
               onChange={(event) => handleChange("adminCode", event.target.value)}
             />
