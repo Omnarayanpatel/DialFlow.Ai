@@ -131,7 +131,11 @@ const AdminDashboard = () => {
   const { token, user } = useStore();
   const [activeView, setActiveView] = useState("overview");
   const [responses, setResponses] = useState([]);
+  const [isLoadingResponses, setIsLoadingResponses] = useState(true); // New state for loading
   const [feedback, setFeedback] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportHistory, setExportHistory] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dispositionFilter, setDispositionFilter] = useState("all");
@@ -146,11 +150,44 @@ const AdminDashboard = () => {
   const [reportDateTo, setReportDateTo] = useState("2026-04-28");
   const [reportAgent, setReportAgent] = useState("all");
   const [reportGenerated, setReportGenerated] = useState(false);
+  const [exportDateFrom, setExportDateFrom] = useState("2026-04-21");
+  const [exportDateTo, setExportDateTo] = useState("2026-04-28");
+  const [exportStatus, setExportStatus] = useState("all");
+  const [exportDisposition, setExportDisposition] = useState("all");
+  const [exportAgent, setExportAgent] = useState("all");
+  const [exportLanguage, setExportLanguage] = useState("all");
+  const [exportFormat, setExportFormat] = useState("csv");
+  const [exportColumns, setExportColumns] = useState([
+    "reference_id",
+    "employee_id",
+    "employee_name",
+    "call_status",
+    "disposition",
+    "sub_disposition",
+    "language",
+    "remark",
+    "created_at",
+  ]);
   const [agentForm, setAgentForm] = useState({
     employeeId: "",
     name: "",
     password: "",
   });
+
+  const exportColumnOptions = [
+    ["reference_id", "Ref ID"],
+    ["employee_id", "Employee ID"],
+    ["employee_name", "Agent Name"],
+    ["zoho_id", "Zoho ID"],
+    ["call_status", "Call Status"],
+    ["disposition", "Disposition"],
+    ["sub_disposition", "Sub-Disposition"],
+    ["language", "Language"],
+    ["language_other", "Language (Other)"],
+    ["remark", "Remark"],
+    ["created_at", "Date & Time"],
+    ["date_only", "Date only"],
+  ];
 
   const analytics = useMemo(() => {
     const totalCalls = responses.length;
@@ -307,6 +344,32 @@ const AdminDashboard = () => {
     });
   }, [reportAgent, reportDateFrom, reportDateTo, responses]);
 
+  const exportRows = useMemo(() => {
+    const from = exportDateFrom ? new Date(`${exportDateFrom}T00:00:00`) : null;
+    const to = exportDateTo ? new Date(`${exportDateTo}T23:59:59`) : null;
+
+    return responses.filter((item) => {
+      const createdAt = item.created_at ? new Date(item.created_at) : null;
+      const languageValue = item.language === "Other" ? item.language_other || "Other" : item.language;
+      const matchesFrom = !from || (createdAt && createdAt >= from);
+      const matchesTo = !to || (createdAt && createdAt <= to);
+      const matchesStatus = exportStatus === "all" || item.call_status === exportStatus;
+      const matchesDisposition = exportDisposition === "all" || item.disposition === exportDisposition;
+      const matchesAgent = exportAgent === "all" || item.employee_id === exportAgent;
+      const matchesLanguage = exportLanguage === "all" || languageValue === exportLanguage;
+
+      return matchesFrom && matchesTo && matchesStatus && matchesDisposition && matchesAgent && matchesLanguage;
+    });
+  }, [
+    exportAgent,
+    exportDateFrom,
+    exportDateTo,
+    exportDisposition,
+    exportLanguage,
+    exportStatus,
+    responses,
+  ]);
+
   const reportSummary = useMemo(() => {
     const total = reportRows.length;
     const connected = reportRows.filter((item) => item.call_status === "Connected").length;
@@ -434,12 +497,16 @@ const AdminDashboard = () => {
   const notConnectedWidth = analytics.totalCalls ? Math.max((analytics.notConnectedCalls / analytics.totalCalls) * 100, 6) : 6;
 
   const loadResponses = async () => {
+    setIsLoadingResponses(true); // Set loading true before fetch
     try {
       const data = await getAllResponses(token);
       setResponses(data);
       setFeedback("");
     } catch (error) {
       setFeedback(error.message || "Unable to load admin data.");
+      setResponses([]); // Ensure responses is empty on error
+    } finally {
+      setIsLoadingResponses(false); // Set loading false after fetch
     }
   };
 
@@ -447,6 +514,7 @@ const AdminDashboard = () => {
     if (token) {
       loadResponses();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const handleLogout = () => {
@@ -482,6 +550,114 @@ const AdminDashboard = () => {
     setAgentFilter("all");
     setLanguageFilter("all");
     setResponsePage(1);
+  };
+
+  const toggleExportColumn = (column) => {
+    setExportColumns((current) =>
+      current.includes(column) ? current.filter((item) => item !== column) : [...current, column]
+    );
+  };
+
+  const selectAllExportColumns = () => {
+    setExportColumns(exportColumnOptions.map(([key]) => key));
+  };
+
+  const clearExportColumns = () => {
+    setExportColumns([]);
+  };
+
+  const exportValueFor = (item, column) => {
+    if (column === "language") {
+      return item.language === "Other" ? item.language_other || "Other" : item.language || "";
+    }
+
+    if (column === "date_only") {
+      return item.created_at ? new Date(item.created_at).toLocaleDateString("en-IN") : "";
+    }
+
+    if (column === "created_at") {
+      return item.created_at ? new Date(item.created_at).toLocaleString("en-IN") : "";
+    }
+
+    return item[column] || "";
+  };
+
+  const downloadCustomExport = async (format = exportFormat) => {
+    const selectedOptions = exportColumnOptions.filter(([key]) => exportColumns.includes(key));
+
+    if (!selectedOptions.length) {
+      setFeedback("Export ke liye kam se kam ek column select karein.");
+      return;
+    }
+
+    setIsExporting(true);
+    setExportProgress(10);
+
+    // Simulate export steps
+    setTimeout(() => setExportProgress(45), 600);
+    setTimeout(() => setExportProgress(80), 1200);
+
+    const escapeCsv = (value) => {
+      if (value === null || value === undefined) {
+        return "";
+      }
+
+      const text = String(value);
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+
+    setTimeout(() => {
+      const fileStamp = `${exportDateFrom || "all"}-${exportDateTo || "all"}`;
+      const headers = selectedOptions.map(([, label]) => label);
+      const rows = exportRows.map((item) => selectedOptions.map(([key]) => exportValueFor(item, key)));
+      
+      const content =
+        format === "excel"
+          ? `
+            <html>
+              <head><meta charset="utf-8" /></head>
+              <body>
+                <table border="1">
+                  <thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead>
+                  <tbody>
+                    ${rows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
+                  </tbody>
+                </table>
+              </body>
+            </html>
+          `
+          : [headers.map(escapeCsv).join(","), ...rows.map((row) => row.map(escapeCsv).join(","))].join("\n");
+          
+      const blob = new Blob([content], {
+        type: format === "excel" ? "application/vnd.ms-excel;charset=utf-8" : "text/csv;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `call_data_${fileStamp}.${format === "excel" ? "xls" : "csv"}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      setExportProgress(100);
+      
+      // Add to History
+      const newRecord = {
+        id: Date.now(),
+        time: new Date().toLocaleTimeString(),
+        format: format.toUpperCase(),
+        rows: exportRows.length,
+        agent: user.name,
+      };
+      setExportHistory(prev => [newRecord, ...prev]);
+      setFeedback("");
+
+      setTimeout(() => {
+        setIsExporting(false);
+        setExportProgress(0);
+      }, 600);
+    }, 1800);
   };
 
   const buildReportTableRows = () =>
@@ -642,6 +818,10 @@ const AdminDashboard = () => {
             background: rgba(180, 169, 205, 0.65);
             border-radius: 999px;
           }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
         `}
       </style>
 
@@ -721,19 +901,12 @@ const AdminDashboard = () => {
               ["responses", "All responses", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
-              ["export", "Export CSV", "download"],
+              ["export", "Export CSV / Excel", "download"],
             ].map(([id, label, icon]) => (
               <button
                 type="button"
                 key={label}
-                onClick={() => {
-                  if (id === "export") {
-                    downloadResponsesExport(token);
-                    return;
-                  }
-
-                  setActiveView(id);
-                }}
+                onClick={() => setActiveView(id)}
                 style={{
                   width: "100%",
                   display: "flex",
@@ -1542,6 +1715,277 @@ const AdminDashboard = () => {
                   </div>
                 </section>
               ) : null}
+            </>
+          ) : activeView === "export" ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Export Data</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    Download call data as CSV or Excel with custom filters & columns
+                  </div>
+                </div>
+                <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
+                  {exportRows.length} rows selected
+                </span>
+              </div>
+
+              {isLoadingResponses ? (
+                <div style={{ marginTop: "32px", textAlign: "center", color: "#aeb5d4", fontSize: "18px" }}>
+                  <div style={{
+                    border: "4px solid rgba(168, 85, 247, 0.2)",
+                    borderTop: "4px solid #a855f7",
+                    borderRadius: "50%",
+                    width: "40px",
+                    height: "40px",
+                    animation: "spin 1s linear infinite",
+                    margin: "0 auto 16px auto"
+                  }} />
+                  Loading responses...
+                </div>
+              ) : (
+              <>
+              <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px", maxWidth: "760px" }}>
+                {[
+                  ["csv", "CSV Export", "Comma-separated values - compatible with Google Sheets, any spreadsheet, and data tools.", ".csv"],
+                  ["excel", "Excel Export", "Multi-sheet Excel file style - opens in Microsoft Excel and spreadsheet apps.", ".xls"],
+                ].map(([id, title, description, tag]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setExportFormat(id)}
+                    style={{
+                      ...panel,
+                      minHeight: "210px",
+                      padding: "28px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      borderColor: exportFormat === id ? "#a855f7" : "rgba(132, 80, 255, 0.34)",
+                      background: exportFormat === id ? "#18102f" : "#121027",
+                      position: "relative",
+                    }}
+                  >
+                    {exportFormat === id ? (
+                      <span style={{ position: "absolute", right: "18px", top: "18px", width: "28px", height: "28px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#8b3ff4", color: "#fff", fontWeight: 700 }}>
+                        ✓
+                      </span>
+                    ) : null}
+                    <div style={{ width: "54px", height: "54px", borderRadius: "12px", display: "grid", placeItems: "center", background: id === "csv" ? "rgba(139, 63, 244, 0.24)" : "rgba(38, 230, 173, 0.12)", fontSize: "28px" }}>
+                      {id === "csv" ? "▤" : "▥"}
+                    </div>
+                    <h2 style={{ margin: "20px 0 0", color: "#f4f0ff", fontSize: "21px" }}>{title}</h2>
+                    <p style={{ margin: "10px 0 0", color: "#9da6c3", lineHeight: 1.45, fontSize: "15px" }}>{description}</p>
+                    <span style={{ display: "inline-flex", marginTop: "16px", padding: "6px 13px", borderRadius: "999px", color: "#7d849f", border: "1px solid rgba(122, 73, 255, 0.34)", background: "rgba(122, 73, 255, 0.12)" }}>
+                      {tag}
+                    </span>
+                  </button>
+                ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                  <h2 style={{ margin: 0, fontSize: "19px" }}>Filters</h2>
+                  <button type="button" onClick={() => { setExportStatus("all"); setExportDisposition("all"); setExportAgent("all"); setExportLanguage("all"); }} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>
+                    All data selected
+                  </button>
+                </div>
+                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "18px" }}>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Date from
+                    <input type="date" style={{ ...input, marginTop: "8px" }} value={exportDateFrom} onChange={(event) => setExportDateFrom(event.target.value)} />
+                  </label>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Date to
+                    <input type="date" style={{ ...input, marginTop: "8px" }} value={exportDateTo} onChange={(event) => setExportDateTo(event.target.value)} />
+                  </label>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Call status
+                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportStatus} onChange={(event) => setExportStatus(event.target.value)}>
+                      <option value="all">All</option>
+                      <option value="Connected">Connected</option>
+                      <option value="Not Connected">Not Connected</option>
+                    </select>
+                  </label>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Disposition
+                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportDisposition} onChange={(event) => setExportDisposition(event.target.value)}>
+                      <option value="all">All</option>
+                      {dispositions.map((disposition) => (
+                        <option key={disposition} value={disposition}>{disposition}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Agent
+                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportAgent} onChange={(event) => setExportAgent(event.target.value)}>
+                      <option value="all">All agents</option>
+                      {agents.map(([id, name]) => (
+                        <option key={id} value={id}>{name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
+                    Language
+                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportLanguage} onChange={(event) => setExportLanguage(event.target.value)}>
+                      <option value="all">All</option>
+                      {languageBreakdown.map((language) => (
+                        <option key={language.label} value={language.label}>{language.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center" }}>
+                  <h2 style={{ margin: 0, fontSize: "19px" }}>Select columns to export</h2>
+                  <div style={{ display: "flex", gap: "10px" }}>
+                    <button type="button" onClick={selectAllExportColumns} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>Select all</button>
+                    <button type="button" onClick={clearExportColumns} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px", color: "#7d849f" }}>Clear all</button>
+                  </div>
+                </div>
+                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "12px" }}>
+                  {exportColumnOptions.map(([key, label]) => {
+                    const checked = exportColumns.includes(key);
+
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => toggleExportColumn(key)}
+                        style={{
+                          minHeight: "64px",
+                          borderRadius: "10px",
+                          border: checked ? "1px solid #a855f7" : "1px solid rgba(122, 73, 255, 0.34)",
+                          background: checked ? "rgba(122, 73, 255, 0.16)" : "rgba(255,255,255,0.025)",
+                          color: checked ? "#f4f0ff" : "#9da6c3",
+                          display: "flex",
+                          gap: "10px",
+                          alignItems: "center",
+                          padding: "12px",
+                          textAlign: "left",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ width: "18px", height: "18px", borderRadius: "5px", display: "grid", placeItems: "center", flex: "0 0 auto", background: checked ? "#8b3ff4" : "transparent", border: checked ? "1px solid #8b3ff4" : "1px solid rgba(154, 145, 176, 0.44)", color: "#fff", fontSize: "12px" }}>
+                          {checked ? "✓" : ""}
+                        </span>
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px", overflow: "hidden" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <h2 style={{ margin: 0, fontSize: "19px" }}>Data preview</h2>
+                  <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
+                    {exportRows.length} rows
+                  </span>
+                </div>
+                <div className="admin-scroll" style={{ marginTop: "22px", overflowX: "auto" }}>
+                  <table style={{ width: "100%", minWidth: "720px", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px", letterSpacing: "0.06em" }}>
+                        {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key, label]) => (
+                          <th key={key} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exportRows.slice(0, 8).map((item) => {
+                        return (
+                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key]) => (
+                              <td key={key} style={{ padding: "14px 12px", color: key === "reference_id" ? "#c681ff" : "#aeb5d4" }}>
+                                {exportValueFor(item, key)}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                  <h2 style={{ margin: 0, fontSize: "19px" }}>Export</h2>
+                  <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
+                    {exportFormat.toUpperCase()} · {exportRows.length} rows · {exportColumns.length} columns
+                  </span>
+                </div>
+                <div style={{ marginTop: "22px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                
+                {isExporting && (
+                  <div style={{ marginTop: "24px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", color: "#d9b7ff" }}>
+                      <span>Preparing {exportFormat.toUpperCase()} file...</span>
+                      <span>{exportProgress}%</span>
+                    </div>
+                    <div style={{ height: "8px", background: "rgba(255,255,255,0.05)", borderRadius: "10px", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${exportProgress}%`, background: "linear-gradient(90deg, #7c34f2, #a855f7)", transition: "width 0.3s ease" }} />
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px" }}>
+                  <button 
+                    type="button" 
+                    disabled={isExporting}
+                    onClick={() => downloadCustomExport("csv")} 
+                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1 }}
+                  >
+                    {isExporting && exportFormat === "csv" ? "Exporting..." : "Download CSV"}
+                  </button>
+                  <button 
+                    type="button" 
+                    disabled={isExporting}
+                    onClick={() => downloadCustomExport("excel")} 
+                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1 }}
+                  >
+                    {isExporting && exportFormat === "excel" ? "Exporting..." : "Download Excel (.xls)"}
+                  </button>
+                </div>
+                {feedback ? <div style={{ marginTop: "16px", color: "#d9b7ff" }}>{feedback}</div> : null}
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
+                <h2 style={{ margin: 0, fontSize: "19px" }}>Recent Export History</h2>
+                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div style={{ marginTop: "18px" }}>
+                  {exportHistory.length > 0 ? (
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px" }}>
+                          <th style={{ padding: "10px" }}>Time</th>
+                          <th style={{ padding: "10px" }}>Format</th>
+                          <th style={{ padding: "10px" }}>Rows</th>
+                          <th style={{ padding: "10px" }}>Exported By</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportHistory.map(h => (
+                          <tr key={h.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                            <td style={{ padding: "10px" }}>{h.time}</td>
+                            <td style={{ padding: "10px", color: "#35e5a7" }}>{h.format}</td>
+                            <td style={{ padding: "10px" }}>{h.rows}</td>
+                            <td style={{ padding: "10px", color: "#d39cff" }}>{h.agent}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ color: "#596078", textAlign: "center", padding: "20px" }}>No recent history</div>
+                  )}
+                </div>
+              </section>
+              </>
+              )} {/* End of isLoadingResponses conditional rendering */}
             </>
           ) : (
             <>
