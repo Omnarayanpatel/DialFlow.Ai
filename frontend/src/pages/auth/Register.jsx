@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { persistSession, registerUser } from "../../services/authService";
 
@@ -26,7 +27,8 @@ const inputStyle = {
   fontSize: "15px",
 };
 
-const Register = ({ onSwitchToLogin, onAuthSuccess }) => {
+const Register = ({ onAuthSuccess }) => {
+  const navigate = useNavigate();
   const [form, setForm] = useState({
     employeeId: "",
     name: "",
@@ -64,6 +66,13 @@ const Register = ({ onSwitchToLogin, onAuthSuccess }) => {
       const data = await registerUser(form);
       persistSession(data);
       onAuthSuccess();
+
+      // Redirect to correct dashboard
+      if (data.user.role === "admin") {
+        navigate("/admin/dashboard");
+      } else {
+        navigate("/agent/dashboard");
+      }
     } catch (error) {
       setFeedback(error.message || "Register failed.");
     } finally {
@@ -184,7 +193,7 @@ const Register = ({ onSwitchToLogin, onAuthSuccess }) => {
           Already have an account?{" "}
           <button
             type="button"
-            onClick={onSwitchToLogin}
+            onClick={() => navigate("/login")}
             style={{
               background: "transparent",
               border: 0,

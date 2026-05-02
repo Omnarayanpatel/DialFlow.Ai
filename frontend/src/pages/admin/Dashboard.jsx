@@ -103,12 +103,16 @@ const iconFor = (type) => {
 };
 
 const statusTone = (status) => {
-  if (status === "Connected") {
+  if (status === "Connected" || status === "Online") {
     return { color: "#26e6ad", bg: "rgba(38, 230, 173, 0.12)", border: "rgba(38, 230, 173, 0.34)" };
   }
 
-  if (status === "Not Connected") {
+  if (status === "Not Connected" || status === "Offline") {
     return { color: "#ff7685", bg: "rgba(255, 118, 133, 0.12)", border: "rgba(255, 118, 133, 0.34)" };
+  }
+
+  if (status === "On break") {
+    return { color: "#ffa500", bg: "rgba(255, 165, 0, 0.12)", border: "rgba(255, 165, 0, 0.34)" };
   }
 
   return { color: "#ffd02d", bg: "rgba(255, 208, 45, 0.12)", border: "rgba(255, 208, 45, 0.34)" };
@@ -131,6 +135,7 @@ const AdminDashboard = () => {
   const { token, user } = useStore();
   const [activeView, setActiveView] = useState("overview");
   const [responses, setResponses] = useState([]);
+  const [allAgents, setAllAgents] = useState([]);
   const [isLoadingResponses, setIsLoadingResponses] = useState(true); // New state for loading
   const [feedback, setFeedback] = useState("");
   const [isExporting, setIsExporting] = useState(false);
@@ -264,56 +269,38 @@ const AdminDashboard = () => {
   }, [responses]);
 
   const agentCards = useMemo(() => {
-    const colors = ["#8b3ff4", "#168ba5", "#aa4b0f", "#24476f", "#24476f", "#5f1f72", "#8b3ff4", "#168ba5"];
-    const byAgent = new Map();
-
+    const statsMap = new Map();
     responses.forEach((item) => {
-      const id = item.employee_id || "NA";
-      const current = byAgent.get(id) || {
-        id,
-        name: item.employee_name || id,
-        zohoId: item.zoho_id || "NA",
-        calls: 0,
-        connected: 0,
-        positive: 0,
-      };
-
-      byAgent.set(id, {
-        ...current,
-        zohoId: item.zoho_id || current.zohoId,
+      const id = item.employee_id;
+      const current = statsMap.get(id) || { calls: 0, connected: 0, positive: 0 };
+      statsMap.set(id, {
         calls: current.calls + 1,
         connected: current.connected + (item.call_status === "Connected" ? 1 : 0),
-        positive:
-          current.positive +
-          (item.disposition === "Positive" || item.disposition === "Already Positive" ? 1 : 0),
+        positive: current.positive + (item.disposition === "Positive" || item.disposition === "Already Positive" ? 1 : 0),
       });
     });
 
-    return Array.from(byAgent.values())
-      .sort((a, b) => b.calls - a.calls)
-      .map((agent, index) => {
-        const connectRate = agent.calls ? Math.round((agent.connected / agent.calls) * 100) : 0;
-        const conversionRate = agent.calls ? Math.round((agent.positive / agent.calls) * 100) : 0;
-        const status = index % 4 === 2 ? "On break" : "Online";
-        const initials = agent.name
-          .split(" ")
-          .filter(Boolean)
-          .slice(0, 2)
-          .map((part) => part[0])
-          .join("")
-          .toUpperCase();
+    const colors = ["#8b3ff4", "#168ba5", "#aa4b0f", "#24476f", "#5f1f72"];
+    return allAgents.map((agent, index) => {
+      const stats = statsMap.get(agent.employee_id) || { calls: 0, connected: 0, positive: 0 };
+      const initials = agent.name?.split(" ").filter(Boolean).slice(0, 2).map(p => p[0]).join("").toUpperCase() || "AG";
 
-        return {
-          ...agent,
-          initials: initials || "AG",
-          connectRate,
-          conversionRate,
-          status,
-          color: colors[index % colors.length],
-          badge: index < 2 ? "Top" : status === "On break" ? "On break" : "Good",
-        };
-      });
-  }, [responses]);
+      return {
+        id: agent.employee_id,
+        name: agent.name,
+        zohoId: agent.zoho_id || "NA",
+        calls: stats.calls,
+        connected: stats.connected,
+        positive: stats.positive,
+        initials,
+        connectRate: stats.calls ? Math.round((stats.connected / stats.calls) * 100) : 0,
+        conversionRate: stats.calls ? Math.round((stats.positive / stats.calls) * 100) : 0,
+        status: agent.status || "Offline",
+        color: colors[index % colors.length],
+        badge: agent.status === "Online" ? "Active" : agent.status === "On break" ? "Break" : "Offline",
+      };
+    }).sort((a, b) => b.calls - a.calls);
+  }, [allAgents, responses]);
 
   const filteredAgentCards = useMemo(() => {
     const term = agentSearch.trim().toLowerCase();
@@ -496,26 +483,64 @@ const AdminDashboard = () => {
   const connectedWidth = analytics.totalCalls ? Math.max((analytics.connectedCalls / analytics.totalCalls) * 100, 6) : 6;
   const notConnectedWidth = analytics.totalCalls ? Math.max((analytics.notConnectedCalls / analytics.totalCalls) * 100, 6) : 6;
 
+  const hourlyCounts = useMemo(() => {
+    const todayStr = new Date().toDateString();
+    const hours = ["09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"];
+    return hours.map(hour => {
+      return responses.filter(r => {
+        if (!r.created_at) return false;
+        const date = new Date(r.created_at);
+        return date.toDateString() === todayStr && 
+               date.getHours().toString().padStart(2, '0') === hour;
+      }).length;
+    });
+  }, [responses]);
+
+  const maxHourlyCount = Math.max(1000, ...hourlyCounts);
+  const hourlyLabels = ["9AM", "10AM", "11AM", "12PM", "1PM", "2PM", "3PM", "4PM", "5PM", "6PM", "7PM"];
+
   const loadResponses = async () => {
-    setIsLoadingResponses(true); // Set loading true before fetch
+       if (responses.length === 0) {
+      setIsLoadingResponses(true);
+    }
     try {
       const data = await getAllResponses(token);
       setResponses(data);
       setFeedback("");
     } catch (error) {
       setFeedback(error.message || "Unable to load admin data.");
-      setResponses([]); // Ensure responses is empty on error
     } finally {
       setIsLoadingResponses(false); // Set loading false after fetch
+    }
+  };
+
+  const loadAgents = async () => {
+    try {
+      const response = await fetch("http://localhost:5000/api/auth/agents", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setAllAgents(data.data);
+      }
+    } catch (error) {
+      console.error("Failed to load agents:", error);
     }
   };
 
   useEffect(() => {
     if (token) {
       loadResponses();
+      loadAgents();
+
+      const interval = setInterval(() => {
+        loadResponses();
+        loadAgents();
+      }, 5000); // 5 सेकंड में रियल-टाइम अपडेट के लिए
+
+      return () => clearInterval(interval);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [token, responses.length]);
 
   const handleLogout = () => {
     localStorage.clear();
@@ -1285,6 +1310,7 @@ const AdminDashboard = () => {
                     <option value="all">All status</option>
                     <option value="Online">Online</option>
                     <option value="On break">On break</option>
+                    <option value="Offline">Offline</option>
                   </select>
                   <div style={{ ...panel, display: "flex", padding: "6px", borderRadius: "16px", gap: "6px" }}>
                     {["grid", "table"].map((mode) => (
@@ -1351,8 +1377,22 @@ const AdminDashboard = () => {
                             <div style={{ marginTop: "8px", color: "#5f667f", fontSize: "17px" }}>
                               {agent.id} | {agent.zohoId}
                             </div>
-                            <div style={{ marginTop: "8px", color: agent.status === "Online" ? "#35e5a7" : "#ffd02d", fontSize: "17px" }}>
-                              ● {agent.status}
+                            <div style={{ 
+                              marginTop: "8px", 
+                              color: agent.status === "Online" ? "#35e5a7" : agent.status === "On break" ? "#ffa500" : "#ff7685", 
+                              fontSize: "17px",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px"
+                            }}>
+                              <span style={{ 
+                                width: "8px", 
+                                height: "8px", 
+                                borderRadius: "50%", 
+                                background: agent.status === "Online" ? "#35e5a7" : agent.status === "On break" ? "#ffa500" : "#ff7685",
+                                boxShadow: agent.status === "Online" ? "0 0 10px rgba(53, 229, 167, 0.4)" : "none"
+                              }} />
+                              {agent.status}
                             </div>
                           </div>
                         </div>
@@ -1428,7 +1468,23 @@ const AdminDashboard = () => {
                         <tr key={agent.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
                           <td style={{ padding: "15px 14px" }}>{agent.name}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.id}</td>
-                          <td style={{ padding: "15px 14px", color: agent.status === "Online" ? "#35e5a7" : "#ffd02d" }}>{agent.status}</td>
+                          <td style={{ padding: "15px 14px" }}>
+                            <span style={{ 
+                              padding: "4px 12px", 
+                              borderRadius: "999px", 
+                              fontSize: "14px",
+                              background: agent.status === "Online" ? "rgba(38, 230, 173, 0.1)" : 
+                                         agent.status === "On break" ? "rgba(255, 165, 0, 0.1)" : 
+                                         "rgba(255, 118, 133, 0.1)",
+                              color: agent.status === "Online" ? "#35e5a7" : 
+                                     agent.status === "On break" ? "#ffa500" : "#ff7685",
+                              border: `1px solid ${agent.status === "Online" ? "rgba(38, 230, 173, 0.2)" : 
+                                                 agent.status === "On break" ? "rgba(255, 165, 0, 0.2)" : 
+                                                 "rgba(255, 118, 133, 0.2)"}`
+                            }}>
+                              {agent.status}
+                            </span>
+                          </td>
                           <td style={{ padding: "15px 14px" }}>{agent.calls}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.connected}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.positive}</td>
@@ -2079,16 +2135,56 @@ const AdminDashboard = () => {
                 </span>
               </div>
               <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-              <svg viewBox="0 0 560 220" style={{ width: "100%", marginTop: "20px" }}>
-                {[0, 1, 2, 3, 4].map((line) => (
-                  <line key={line} x1="30" x2="535" y1={30 + line * 40} y2={30 + line * 40} stroke="rgba(132, 80, 255, 0.18)" />
-                ))}
-                <path d="M35 165 C80 130 90 78 130 72 S190 128 225 132 S285 72 325 82 S385 144 430 134 S492 102 530 118" fill="rgba(157, 78, 255, 0.12)" stroke="#a855f7" strokeWidth="4" />
-                {[35, 130, 225, 325, 430, 530].map((x, index) => (
-                  <circle key={x} cx={x} cy={[165, 72, 132, 82, 134, 118][index]} r="6" fill="#b568ff" />
-                ))}
-                {["9AM", "10AM", "11AM", "12PM", "1PM", "2PM", "3PM"].map((label, index) => (
-                  <text key={label} x={30 + index * 82} y="210" fill="#555c76" fontSize="14" fontWeight="700">
+              <svg viewBox="0 0 560 230" style={{ width: "100%", marginTop: "20px" }}>
+                {/* Y-axis labels and grid lines */}
+                {[0, 1, 2, 3, 4].map((i) => {
+                  const y = 30 + i * 40;
+                  const label = Math.round(maxHourlyCount - (i * maxHourlyCount) / 4);
+                  return (
+                    <React.Fragment key={i}>
+                      <text x="0" y={y + 4} fill="#555c76" fontSize="10" fontWeight="700">{label}</text>
+                      <line x1="35" x2="535" y1={y} y2={y} stroke="rgba(132, 80, 255, 0.18)" />
+                    </React.Fragment>
+                  );
+                })}
+                
+                {/* Area under the line */}
+                <path 
+                  d={(() => {
+                    const pts = hourlyCounts.map((count, i) => ({ x: 40 + i * 49, y: 190 - (count / maxHourlyCount) * 160 }));
+                    if (!pts.length) return "";
+                    let d = `M ${pts[0].x} ${pts[0].y}`;
+                    if (pts.length > 1) {
+                      d += ` C ${pts[0].x + 20} ${pts[0].y} ${pts[1].x - 20} ${pts[1].y} ${pts[1].x} ${pts[1].y}`;
+                      for (let i = 2; i < pts.length; i++) d += ` S ${pts[i].x - 20} ${pts[i].y} ${pts[i].x} ${pts[i].y}`;
+                    }
+                    return d + ` L ${pts[pts.length - 1].x} 190 L ${pts[0].x} 190 Z`;
+                  })()}
+                  fill="rgba(157, 78, 255, 0.12)"
+                />
+                {/* Trend line */}
+                <path
+                  d={(() => {
+                    const pts = hourlyCounts.map((count, i) => ({ x: 40 + i * 49, y: 190 - (count / maxHourlyCount) * 160 }));
+                    if (!pts.length) return "";
+                    let d = `M ${pts[0].x} ${pts[0].y}`;
+                    if (pts.length > 1) {
+                      d += ` C ${pts[0].x + 20} ${pts[0].y} ${pts[1].x - 20} ${pts[1].y} ${pts[1].x} ${pts[1].y}`;
+                      for (let i = 2; i < pts.length; i++) d += ` S ${pts[i].x - 20} ${pts[i].y} ${pts[i].x} ${pts[i].y}`;
+                    }
+                    return d;
+                  })()}
+                  fill="none"
+                  stroke="#a855f7"
+                  strokeWidth="4"
+                />
+                {hourlyCounts.map((count, i) => {
+                  const x = 40 + i * 49;
+                  const y = 190 - (count / maxHourlyCount) * 160;
+                  return <circle key={i} cx={x} cy={y} r="6" fill="#b568ff" />;
+                })}
+                {hourlyLabels.map((label, index) => (
+                  <text key={label} x={35 + index * 49} y="215" fill="#555c76" fontSize="10" fontWeight="700">
                     {label}
                   </text>
                 ))}
@@ -2119,9 +2215,9 @@ const AdminDashboard = () => {
           <section style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "18px" }}>
             <article style={{ ...panel, padding: "28px", overflow: "hidden" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <h2 style={{ margin: 0, fontSize: "19px" }}>All responses</h2>
+                <h2 style={{ margin: 0, fontSize: "19px" }}>Recent responses</h2>
                 <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
-                  {filteredResponses.length} total
+                  Latest 6
                 </span>
               </div>
               <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
@@ -2162,7 +2258,7 @@ const AdminDashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredResponses.map((item) => {
+                    {filteredResponses.slice(0, 6).map((item) => {
                       const tone = statusTone(item.call_status);
 
                       return (

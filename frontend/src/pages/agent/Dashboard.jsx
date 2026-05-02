@@ -164,6 +164,13 @@ const formatDateTime = (date) =>
     hour12: true,
   }).format(date);
 
+const formatDuration = (seconds) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+};
+
 const formatTime = (date) =>
   new Intl.DateTimeFormat("en-IN", {
     hour: "2-digit",
@@ -256,6 +263,11 @@ const Dashboard = () => {
   const [zohoId, setZohoId] = useState(user.zohoId || "");
   const [dialerId, setDialerId] = useState(user.dialerId || "");
   const [isInfoLocked, setIsInfoLocked] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [workDuration, setWorkDuration] = useState(() => {
+    const saved = sessionStorage.getItem("agentWorkDuration");
+    return saved ? parseInt(saved, 10) : 0;
+  });
 
   const [referenceId, setReferenceId] = useState("");
   const [callStatus, setCallStatus] = useState("Connected");
@@ -287,12 +299,19 @@ const Dashboard = () => {
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       setCurrentTime(new Date());
+      if (!isPaused) {
+        setWorkDuration((prev) => {
+          const next = prev + 1;
+          sessionStorage.setItem("agentWorkDuration", next.toString());
+          return next;
+        });
+      }
     }, 1000);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [isPaused]);
 
   useEffect(() => {
     let ignore = false;
@@ -359,7 +378,20 @@ const Dashboard = () => {
     setNotes("");
   };
 
-  const handleLogout = () => {
+  const syncStatus = async (status) => {
+    try {
+      await fetch("http://localhost:5000/api/auth/status", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status }),
+      });
+    } catch (err) {
+      console.error("Failed to sync status:", err);
+    }
+  };
+
+  const handleLogout = async () => {
+    await syncStatus("Offline");
     localStorage.clear();
     window.location.reload();
   };
@@ -368,9 +400,20 @@ const Dashboard = () => {
   const effectiveDisposition = showOtherDisposition ? dispositionOther || "Other" : disposition;
   const effectiveSubDisposition = showOtherSubDisposition ? subDispositionOther || "Other" : subDisposition;
 
+  const handleTogglePause = () => {
+    const nextState = !isPaused;
+    setIsPaused(nextState);
+    syncStatus(nextState ? "On break" : "Online");
+  };
+
   const handleSubmit = async () => {
     if (!token) {
       setFeedback("Login token missing. Please login first to connect dashboard with backend.");
+      return;
+    }
+
+    if (isPaused) {
+      setFeedback("You are currently on break. Please go Online to submit responses.");
       return;
     }
 
@@ -538,29 +581,57 @@ const Dashboard = () => {
               <div style={{ marginTop: "8px", fontSize: "16px", color: "#aba3c5" }}>
                 {user.employeeId} | {user.zohoId}
               </div>
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  marginTop: "18px",
-                  padding: "7px 14px",
-                  borderRadius: "999px",
-                  background: "rgba(122, 73, 255, 0.14)",
-                  border: "1px solid rgba(166, 108, 255, 0.24)",
-                  color: "#daafff",
-                }}
-              >
-                <span
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "18px" }}>
+                <div
                   style={{
-                    width: "9px",
-                    height: "9px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "7px 14px",
                     borderRadius: "999px",
-                    background: "#bf79ff",
-                    animation: "pulseBadge 1.8s infinite",
+                    background: isPaused ? "rgba(255, 165, 0, 0.14)" : "rgba(53, 229, 167, 0.14)",
+                    border: isPaused ? "1px solid rgba(255, 165, 0, 0.34)" : "1px solid rgba(53, 229, 167, 0.34)",
+                    color: isPaused ? "#ffa500" : "#35e5a7",
                   }}
-                />
-                Online
+                >
+                  <span
+                    style={{
+                      width: "9px",
+                      height: "9px",
+                      borderRadius: "999px",
+                      background: isPaused ? "#ffa500" : "#35e5a7",
+                      animation: isPaused ? "none" : "pulseBadge 1.8s infinite",
+                    }}
+                  />
+                  {isPaused ? " On break" : "Online"}
+                </div>
+
+                <div 
+                  onClick={handleTogglePause}
+                  style={{
+                    width: "40px",
+                    height: "20px",
+                    background: isPaused ? "rgba(255, 165, 0, 0.2)" : "rgba(53, 229, 167, 0.2)",
+                    borderRadius: "999px",
+                    position: "relative",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  title={isPaused ? "Go Online" : "Go Offline (Pause)"}
+                >
+                  <div 
+                    style={{
+                      width: "14px",
+                      height: "14px",
+                      background: isPaused ? "#ffa500" : "#35e5a7",
+                      borderRadius: "50%",
+                      position: "absolute",
+                      top: "3px",
+                      left: isPaused ? "3px" : "23px",
+                      transition: "all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55)",
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -749,7 +820,7 @@ const Dashboard = () => {
                 fontSize: "16px",
               }}
             >
-              Login time | {formatTime(loginTime)}
+              Login: {formatTime(loginTime)} | Work Time: {formatDuration(workDuration)}
             </div>
           </div>
 

@@ -22,6 +22,7 @@ const sanitizeUser = (user) => ({
   employeeId: user.employee_id,
   zohoId: user.zoho_id,
   role: user.role,
+  status: user.status,
   createdAt: user.created_at,
 });
 
@@ -58,6 +59,12 @@ const login = async (req, res, next) => {
         message: "Invalid Employee ID or password",
       });
     }
+
+    // Set user status to Online upon login
+    await query(
+      "UPDATE users SET status = 'Online' WHERE id = $1",
+      [user.id]
+    );
 
     res.status(200).json({
       success: true,
@@ -164,8 +171,50 @@ const getProfile = async (req, res, next) => {
   }
 };
 
+const updateStatus = async (req, res, next) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ success: false, message: "Status is required" });
+    }
+
+    await query(
+      "UPDATE users SET status = $1 WHERE id = $2",
+      [status, req.user.id]
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Status updated to ${status}`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAllAgents = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const result = await query(
+      "SELECT id, name, employee_id, zoho_id, role, status, created_at FROM users WHERE role = 'agent' ORDER BY name ASC"
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
   register,
   getProfile,
+  updateStatus,
+  getAllAgents,
 };
