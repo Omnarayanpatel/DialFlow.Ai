@@ -1,4 +1,10 @@
-export const API_BASE_URL = "http://127.0.0.1:5000/api";
+const configuredApiUrl = import.meta.env.VITE_API_URL;
+
+if (!configuredApiUrl) {
+  throw new Error("VITE_API_URL is not configured");
+}
+
+export const API_BASE_URL = `${configuredApiUrl.replace(/\/$/, "")}/api`;
 
 const buildHeaders = (token) => {
   const headers = {

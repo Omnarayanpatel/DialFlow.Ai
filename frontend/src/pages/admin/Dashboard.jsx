@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import { registerUser } from "../../services/authService";
+import { getAgentMonitoring, registerUser } from "../../services/authService";
 import { downloadResponsesExport, getAllResponses } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
 
@@ -103,15 +103,17 @@ const iconFor = (type) => {
 };
 
 const statusTone = (status) => {
-  if (status === "Connected" || status === "Online") {
+  const value = String(status || "").trim().toLowerCase();
+
+  if (status === "Connected" || value === "online") {
     return { color: "#26e6ad", bg: "rgba(38, 230, 173, 0.12)", border: "rgba(38, 230, 173, 0.34)" };
   }
 
-  if (status === "Not Connected" || status === "Offline") {
+  if (status === "Not Connected" || value === "offline") {
     return { color: "#ff7685", bg: "rgba(255, 118, 133, 0.12)", border: "rgba(255, 118, 133, 0.34)" };
   }
 
-  if (status === "On break") {
+  if (value === "break" || value === "on break") {
     return { color: "#ffa500", bg: "rgba(255, 165, 0, 0.12)", border: "rgba(255, 165, 0, 0.34)" };
   }
 
@@ -131,11 +133,66 @@ const countBy = (items, key, fallback = "NA") => {
     .sort((a, b) => b.value - a.value);
 };
 
+const fallbackAdminSummary = {
+  totalCalls: 0,
+  connectedCalls: 0,
+  positiveCalls: 0,
+  notConnectedCalls: 0,
+  activeAgents: 0,
+  agentsOnBreak: 0,
+};
+
+const normalizeAgentStatus = (status) => {
+  const value = String(status || "offline").trim().toLowerCase();
+
+  if (value === "online") return "online";
+  if (value === "break" || value === "on break") return "break";
+  return "offline";
+};
+
+const displayAgentStatus = (status) => {
+  const value = normalizeAgentStatus(status);
+
+  if (value === "online") return "online";
+  if (value === "break") return "break";
+  return "offline";
+};
+
+const formatDuration = (seconds) => {
+  const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(Number(seconds), 0) : 0;
+  const h = Math.floor(safeSeconds / 3600);
+  const m = Math.floor((safeSeconds % 3600) / 60);
+  const s = safeSeconds % 60;
+
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+};
+
+const formatDateTime = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  return new Date(value).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+};
+
 const AdminDashboard = () => {
   const { token, user } = useStore();
   const [activeView, setActiveView] = useState("overview");
   const [responses, setResponses] = useState([]);
   const [allAgents, setAllAgents] = useState([]);
+  const [adminSummary, setAdminSummary] = useState(fallbackAdminSummary);
+  const [responsePagination, setResponsePagination] = useState({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 1,
+  });
   const [isLoadingResponses, setIsLoadingResponses] = useState(true); // New state for loading
   const [feedback, setFeedback] = useState("");
   const [isExporting, setIsExporting] = useState(false);
@@ -146,7 +203,11 @@ const AdminDashboard = () => {
   const [dispositionFilter, setDispositionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
   const [languageFilter, setLanguageFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("");
+  const [employeeNameFilter, setEmployeeNameFilter] = useState("");
+  const [referenceIdFilter, setReferenceIdFilter] = useState("");
   const [responsePage, setResponsePage] = useState(1);
+  const [responsePageSize, setResponsePageSize] = useState(10);
   const [agentSearch, setAgentSearch] = useState("");
   const [agentStatusFilter, setAgentStatusFilter] = useState("all");
   const [agentViewMode, setAgentViewMode] = useState("grid");
@@ -195,11 +256,12 @@ const AdminDashboard = () => {
   ];
 
   const analytics = useMemo(() => {
-    const totalCalls = responses.length;
-    const connectedCalls = responses.filter((item) => item.call_status === "Connected").length;
-    const notConnectedCalls = responses.filter((item) => item.call_status === "Not Connected").length;
-    const positiveCalls = responses.filter((item) => item.disposition === "Positive" || item.disposition === "Already Positive").length;
-    const activeAgents = new Set(responses.map((item) => item.employee_id).filter(Boolean)).size;
+    const totalCalls = adminSummary.totalCalls || 0;
+    const connectedCalls = adminSummary.connectedCalls || 0;
+    const notConnectedCalls = adminSummary.notConnectedCalls || 0;
+    const positiveCalls = adminSummary.positiveCalls || 0;
+    const activeAgents = adminSummary.activeAgents || 0;
+    const agentsOnBreak = adminSummary.agentsOnBreak || 0;
 
     return {
       totalCalls,
@@ -207,21 +269,27 @@ const AdminDashboard = () => {
       notConnectedCalls,
       positiveCalls,
       activeAgents,
+      agentsOnBreak,
       connectRate: totalCalls ? Math.round((connectedCalls / totalCalls) * 100) : 0,
       conversionRate: totalCalls ? Math.round((positiveCalls / totalCalls) * 100) : 0,
     };
-  }, [responses]);
+  }, [adminSummary]);
 
   const agents = useMemo(
-    () =>
-      Array.from(
+    () => {
+      if (allAgents.length) {
+        return allAgents.map((agent) => [agent.employee_id, agent.name || agent.employee_id]);
+      }
+
+      return Array.from(
         new Map(
           responses
             .filter((item) => item.employee_id)
             .map((item) => [item.employee_id, item.employee_name || item.employee_id])
         ).entries()
-      ),
-    [responses]
+      );
+    },
+    [allAgents, responses]
   );
 
   const dispositions = useMemo(
@@ -236,8 +304,7 @@ const AdminDashboard = () => {
       const matchesSearch =
         !term ||
         item.reference_id?.toLowerCase().includes(term) ||
-        item.employee_name?.toLowerCase().includes(term) ||
-        item.employee_id?.toLowerCase().includes(term);
+        item.employee_name?.toLowerCase().includes(term);
       const matchesStatus = statusFilter === "all" || item.call_status === statusFilter;
       const matchesDisposition = dispositionFilter === "all" || item.disposition === dispositionFilter;
       const matchesAgent = agentFilter === "all" || item.employee_id === agentFilter;
@@ -269,20 +336,13 @@ const AdminDashboard = () => {
   }, [responses]);
 
   const agentCards = useMemo(() => {
-    const statsMap = new Map();
-    responses.forEach((item) => {
-      const id = item.employee_id;
-      const current = statsMap.get(id) || { calls: 0, connected: 0, positive: 0 };
-      statsMap.set(id, {
-        calls: current.calls + 1,
-        connected: current.connected + (item.call_status === "Connected" ? 1 : 0),
-        positive: current.positive + (item.disposition === "Positive" || item.disposition === "Already Positive" ? 1 : 0),
-      });
-    });
-
     const colors = ["#8b3ff4", "#168ba5", "#aa4b0f", "#24476f", "#5f1f72"];
     return allAgents.map((agent, index) => {
-      const stats = statsMap.get(agent.employee_id) || { calls: 0, connected: 0, positive: 0 };
+      const stats = {
+        calls: agent.today_calls || 0,
+        connected: agent.today_connected || 0,
+        positive: agent.today_positive || 0,
+      };
       const initials = agent.name?.split(" ").filter(Boolean).slice(0, 2).map(p => p[0]).join("").toUpperCase() || "AG";
 
       return {
@@ -295,12 +355,18 @@ const AdminDashboard = () => {
         initials,
         connectRate: stats.calls ? Math.round((stats.connected / stats.calls) * 100) : 0,
         conversionRate: stats.calls ? Math.round((stats.positive / stats.calls) * 100) : 0,
-        status: agent.status || "Offline",
+        status: normalizeAgentStatus(agent.status),
+        loginTime: agent.login_time || null,
+        activeSessionDuration: agent.active_session_duration || 0,
+        breakCount: agent.break_count || 0,
+        totalBreakDuration: agent.total_break_duration || 0,
+        currentBreakDuration: agent.current_break_duration || 0,
+        activeSessionCount: agent.active_session_count || 0,
         color: colors[index % colors.length],
-        badge: agent.status === "Online" ? "Active" : agent.status === "On break" ? "Break" : "Offline",
+        badge: normalizeAgentStatus(agent.status) === "online" ? "online" : normalizeAgentStatus(agent.status) === "break" ? "break" : "offline",
       };
     }).sort((a, b) => b.calls - a.calls);
-  }, [allAgents, responses]);
+  }, [allAgents]);
 
   const filteredAgentCards = useMemo(() => {
     const term = agentSearch.trim().toLowerCase();
@@ -330,6 +396,30 @@ const AdminDashboard = () => {
       return matchesFrom && matchesTo && matchesAgent;
     });
   }, [reportAgent, reportDateFrom, reportDateTo, responses]);
+
+  const groupedReportRows = useMemo(() => {
+    const groups = [
+      ["Today", []],
+      ["Yesterday", []],
+      ["Older", []],
+    ];
+    const groupMap = new Map(groups);
+
+    responses
+      .slice()
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+      .forEach((item) => {
+        const key =
+          item.report_group === "today"
+            ? "Today"
+            : item.report_group === "yesterday"
+              ? "Yesterday"
+              : "Older";
+        groupMap.get(key).push(item);
+      });
+
+    return groups.map(([label]) => [label, groupMap.get(label)]);
+  }, [responses]);
 
   const exportRows = useMemo(() => {
     const from = exportDateFrom ? new Date(`${exportDateFrom}T00:00:00`) : null;
@@ -467,13 +557,9 @@ const AdminDashboard = () => {
   const languageBreakdown = useMemo(() => countBy(responses, "language"), [responses]);
   const topDisposition = dispositionBreakdown[0] || { label: "NA", value: 0 };
   const topLanguage = languageBreakdown[0] || { label: "NA", value: 0 };
-  const responsePageSize = 10;
-  const totalResponsePages = Math.max(Math.ceil(filteredResponses.length / responsePageSize), 1);
-  const currentResponsePage = Math.min(responsePage, totalResponsePages);
-  const paginatedResponses = filteredResponses.slice(
-    (currentResponsePage - 1) * responsePageSize,
-    currentResponsePage * responsePageSize
-  );
+  const totalResponsePages = responsePagination.totalPages || 1;
+  const currentResponsePage = Math.min(responsePagination.page || responsePage, totalResponsePages);
+  const paginatedResponses = filteredResponses;
   const avgCallsPerAgent = analytics.activeAgents
     ? Math.round(analytics.totalCalls / analytics.activeAgents)
     : 0;
@@ -504,8 +590,23 @@ const AdminDashboard = () => {
       setIsLoadingResponses(true);
     }
     try {
-      const data = await getAllResponses(token);
-      setResponses(data);
+      const data = await getAllResponses(token, {
+        page: responsePage,
+        pageSize: responsePageSize,
+        date: dateFilter,
+        employeeId: agentFilter,
+        employeeName: employeeNameFilter,
+        referenceId: referenceIdFilter,
+        callStatus: statusFilter,
+        disposition: dispositionFilter,
+        search,
+      });
+      setResponses(data.records || []);
+      setAdminSummary(data.summary || fallbackAdminSummary);
+      setResponsePagination(data.pagination || { page: responsePage, pageSize: responsePageSize, total: 0, totalPages: 1 });
+      if (data.pagination?.totalPages && responsePage > data.pagination.totalPages) {
+        setResponsePage(data.pagination.totalPages);
+      }
       setFeedback("");
     } catch (error) {
       setFeedback(error.message || "Unable to load admin data.");
@@ -516,13 +617,8 @@ const AdminDashboard = () => {
 
   const loadAgents = async () => {
     try {
-      const response = await fetch("http://localhost:5000/api/auth/agents", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAllAgents(data.data);
-      }
+      const data = await getAgentMonitoring(token);
+      setAllAgents(data);
     } catch (error) {
       console.error("Failed to load agents:", error);
     }
@@ -540,7 +636,18 @@ const AdminDashboard = () => {
 
       return () => clearInterval(interval);
     }
-  }, [token, responses.length]);
+  }, [
+    token,
+    responsePage,
+    responsePageSize,
+    dateFilter,
+    agentFilter,
+    employeeNameFilter,
+    referenceIdFilter,
+    statusFilter,
+    dispositionFilter,
+    search,
+  ]);
 
   const handleLogout = () => {
     localStorage.clear();
@@ -574,6 +681,9 @@ const AdminDashboard = () => {
     setDispositionFilter("all");
     setAgentFilter("all");
     setLanguageFilter("all");
+    setDateFilter("");
+    setEmployeeNameFilter("");
+    setReferenceIdFilter("");
     setResponsePage(1);
   };
 
@@ -926,7 +1036,7 @@ const AdminDashboard = () => {
               ["responses", "All responses", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
-              ["export", "Export CSV / Excel", "download"],
+              ["export", "Export", "download"],
             ].map(([id, label, icon]) => (
               <button
                 type="button"
@@ -1181,7 +1291,7 @@ const AdminDashboard = () => {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <h2 style={{ margin: 0, fontSize: "22px" }}>Response log</h2>
                   <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)", fontSize: "18px" }}>
-                    {filteredResponses.length} records
+                    {responsePagination.total} records
                   </span>
                 </div>
                 <div style={{ marginTop: "24px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
@@ -1189,10 +1299,37 @@ const AdminDashboard = () => {
                 <div style={{ marginTop: "28px", display: "grid", gap: "14px" }}>
                   <input
                     style={{ ...input, fontSize: "24px", padding: "16px 20px" }}
-                    placeholder="Search Ref ID, agent, remark..."
+                    placeholder="Search employee name or Ref ID..."
                     value={search}
                     onChange={(event) => {
                       setSearch(event.target.value);
+                      setResponsePage(1);
+                    }}
+                  />
+                  <input
+                    type="date"
+                    style={{ ...input, fontSize: "24px", padding: "16px 20px" }}
+                    value={dateFilter}
+                    onChange={(event) => {
+                      setDateFilter(event.target.value);
+                      setResponsePage(1);
+                    }}
+                  />
+                  <input
+                    style={{ ...input, fontSize: "24px", padding: "16px 20px" }}
+                    placeholder="Employee name"
+                    value={employeeNameFilter}
+                    onChange={(event) => {
+                      setEmployeeNameFilter(event.target.value);
+                      setResponsePage(1);
+                    }}
+                  />
+                  <input
+                    style={{ ...input, fontSize: "24px", padding: "16px 20px" }}
+                    placeholder="Reference ID"
+                    value={referenceIdFilter}
+                    onChange={(event) => {
+                      setReferenceIdFilter(event.target.value);
                       setResponsePage(1);
                     }}
                   />
@@ -1218,6 +1355,11 @@ const AdminDashboard = () => {
                     {languageBreakdown.map((language) => (
                       <option key={language.label} value={language.label}>{language.label}</option>
                     ))}
+                  </select>
+                  <select className="admin-select" style={{ ...input, fontSize: "24px", padding: "16px 20px" }} value={responsePageSize} onChange={(event) => { setResponsePageSize(Number(event.target.value)); setResponsePage(1); }}>
+                    <option value={10}>10 rows</option>
+                    <option value={25}>25 rows</option>
+                    <option value={50}>50 rows</option>
                   </select>
                   <button type="button" onClick={clearResponseFilters} style={{ ...ghostButton, justifySelf: "start", fontSize: "20px", padding: "13px 28px" }}>
                     Clear
@@ -1267,7 +1409,7 @@ const AdminDashboard = () => {
                 <div style={{ marginTop: "30px", borderTop: "1px solid rgba(122, 73, 255, 0.24)" }} />
                 <div style={{ marginTop: "28px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "18px", flexWrap: "wrap" }}>
                   <div style={{ color: "#596078", fontSize: "18px" }}>
-                    Showing {(currentResponsePage - 1) * responsePageSize + 1}-{Math.min(currentResponsePage * responsePageSize, filteredResponses.length)} of {filteredResponses.length}
+                    Showing {responsePagination.total ? (currentResponsePage - 1) * responsePageSize + 1 : 0}-{Math.min(currentResponsePage * responsePageSize, responsePagination.total)} of {responsePagination.total}
                   </div>
                   <div style={{ display: "flex", gap: "12px" }}>
                     <button type="button" disabled={currentResponsePage === 1} onClick={() => setResponsePage((page) => Math.max(page - 1, 1))} style={{ ...ghostButton, opacity: currentResponsePage === 1 ? 0.45 : 1, minWidth: "140px" }}>
@@ -1308,9 +1450,9 @@ const AdminDashboard = () => {
                     onChange={(event) => setAgentStatusFilter(event.target.value)}
                   >
                     <option value="all">All status</option>
-                    <option value="Online">Online</option>
-                    <option value="On break">On break</option>
-                    <option value="Offline">Offline</option>
+                    <option value="online">online</option>
+                    <option value="break">break</option>
+                    <option value="offline">offline</option>
                   </select>
                   <div style={{ ...panel, display: "flex", padding: "6px", borderRadius: "16px", gap: "6px" }}>
                     {["grid", "table"].map((mode) => (
@@ -1339,7 +1481,7 @@ const AdminDashboard = () => {
               <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px" }}>
                 {[
                   ["TOTAL AGENTS", agentCards.length, "#c681ff"],
-                  ["ONLINE NOW", agentCards.filter((agent) => agent.status === "Online").length, "#35e5a7"],
+                  ["ONLINE NOW", agentCards.filter((agent) => agent.status === "online").length, "#35e5a7"],
                   ["AVG CONNECT RATE", `${agentCards.length ? Math.round(agentCards.reduce((sum, agent) => sum + agent.connectRate, 0) / agentCards.length) : 0}%`, "#27d8ff"],
                   ["TOP PERFORMER", agentCards[0]?.name || "NA", "#ffd02d"],
                 ].map(([title, value, accent]) => (
@@ -1379,7 +1521,7 @@ const AdminDashboard = () => {
                             </div>
                             <div style={{ 
                               marginTop: "8px", 
-                              color: agent.status === "Online" ? "#35e5a7" : agent.status === "On break" ? "#ffa500" : "#ff7685", 
+                              color: agent.status === "online" ? "#35e5a7" : agent.status === "break" ? "#ffa500" : "#ff7685", 
                               fontSize: "17px",
                               display: "flex",
                               alignItems: "center",
@@ -1389,15 +1531,18 @@ const AdminDashboard = () => {
                                 width: "8px", 
                                 height: "8px", 
                                 borderRadius: "50%", 
-                                background: agent.status === "Online" ? "#35e5a7" : agent.status === "On break" ? "#ffa500" : "#ff7685",
-                                boxShadow: agent.status === "Online" ? "0 0 10px rgba(53, 229, 167, 0.4)" : "none"
+                                background: agent.status === "online" ? "#35e5a7" : agent.status === "break" ? "#ffa500" : "#ff7685",
+                                boxShadow: agent.status === "online" ? "0 0 10px rgba(53, 229, 167, 0.4)" : "none"
                               }} />
-                              {agent.status}
+                              {displayAgentStatus(agent.status)}
+                            </div>
+                            <div style={{ marginTop: "8px", color: "#737b98", fontSize: "15px" }}>
+                              Login {formatDateTime(agent.loginTime)} | Sessions {agent.activeSessionCount}
                             </div>
                           </div>
                         </div>
 
-                        <div style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "0.9fr 1.45fr 1.1fr", gap: "12px" }}>
+                        <div style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
                           {[
                             ["CALLS", agent.calls, "#c681ff"],
                             ["CONNECTED", agent.connected, "#27d8ff"],
@@ -1406,6 +1551,20 @@ const AdminDashboard = () => {
                             <div key={label} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "17px 12px", textAlign: "center" }}>
                               <div style={{ color, fontSize: "28px" }}>{value}</div>
                               <div style={{ marginTop: "8px", color: "#596078", fontSize: "15px", letterSpacing: "0.06em" }}>{label}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ marginTop: "16px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
+                          {[
+                            ["SESSION", formatDuration(agent.activeSessionDuration), "#ffd02d"],
+                            ["BREAKS", agent.breakCount, "#ffa500"],
+                            ["BREAK TIME", formatDuration(agent.totalBreakDuration), "#ffb45c"],
+                            ["CURRENT BREAK", agent.status === "break" ? formatDuration(agent.currentBreakDuration) : "00:00:00", "#ff7685"],
+                          ].map(([label, value, color]) => (
+                            <div key={label} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "13px 12px", textAlign: "center" }}>
+                              <div style={{ color, fontSize: typeof value === "number" ? "24px" : "21px", lineHeight: 1 }}>{value}</div>
+                              <div style={{ marginTop: "8px", color: "#596078", fontSize: "13px", letterSpacing: "0.06em" }}>{label}</div>
                             </div>
                           ))}
                         </div>
@@ -1437,9 +1596,9 @@ const AdminDashboard = () => {
                               display: "inline-flex",
                               padding: "7px 14px",
                               borderRadius: "999px",
-                              color: agent.badge === "On break" ? "#ffd02d" : agent.badge === "Top" ? "#d9b7ff" : "#35e5a7",
-                              border: `1px solid ${agent.badge === "On break" ? "rgba(255, 208, 45, 0.48)" : agent.badge === "Top" ? "rgba(168, 85, 247, 0.5)" : "rgba(53, 229, 167, 0.42)"}`,
-                              background: agent.badge === "On break" ? "rgba(255, 208, 45, 0.1)" : agent.badge === "Top" ? "rgba(168, 85, 247, 0.16)" : "rgba(53, 229, 167, 0.12)",
+                              color: agent.badge === "break" ? "#ffd02d" : agent.badge === "offline" ? "#ff7685" : "#35e5a7",
+                              border: `1px solid ${agent.badge === "break" ? "rgba(255, 208, 45, 0.48)" : agent.badge === "offline" ? "rgba(255, 118, 133, 0.42)" : "rgba(53, 229, 167, 0.42)"}`,
+                              background: agent.badge === "break" ? "rgba(255, 208, 45, 0.1)" : agent.badge === "offline" ? "rgba(255, 118, 133, 0.1)" : "rgba(53, 229, 167, 0.12)",
                             }}
                           >
                             {agent.badge}
@@ -1455,10 +1614,10 @@ const AdminDashboard = () => {
                 </section>
               ) : (
                 <section style={{ ...panel, marginTop: "34px", padding: "26px", overflowX: "auto" }}>
-                  <table style={{ width: "100%", minWidth: "900px", borderCollapse: "collapse" }}>
+                  <table style={{ width: "100%", minWidth: "1500px", borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ textAlign: "left", color: "#6d728d", letterSpacing: "0.06em" }}>
-                        {["AGENT", "EMPLOYEE ID", "STATUS", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION"].map((heading) => (
+                        {["AGENT", "EMPLOYEE ID", "STATUS", "LOGIN", "SESSION", "BREAKS", "BREAK TIME", "CURRENT BREAK", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION"].map((heading) => (
                           <th key={heading} style={{ padding: "14px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
                         ))}
                       </tr>
@@ -1473,18 +1632,23 @@ const AdminDashboard = () => {
                               padding: "4px 12px", 
                               borderRadius: "999px", 
                               fontSize: "14px",
-                              background: agent.status === "Online" ? "rgba(38, 230, 173, 0.1)" : 
-                                         agent.status === "On break" ? "rgba(255, 165, 0, 0.1)" : 
+                              background: agent.status === "online" ? "rgba(38, 230, 173, 0.1)" : 
+                                         agent.status === "break" ? "rgba(255, 165, 0, 0.1)" : 
                                          "rgba(255, 118, 133, 0.1)",
-                              color: agent.status === "Online" ? "#35e5a7" : 
-                                     agent.status === "On break" ? "#ffa500" : "#ff7685",
-                              border: `1px solid ${agent.status === "Online" ? "rgba(38, 230, 173, 0.2)" : 
-                                                 agent.status === "On break" ? "rgba(255, 165, 0, 0.2)" : 
-                                                 "rgba(255, 118, 133, 0.2)"}`
+                              color: agent.status === "online" ? "#35e5a7" : 
+                                     agent.status === "break" ? "#ffa500" : "#ff7685",
+                              border: `1px solid ${agent.status === "online" ? "rgba(38, 230, 173, 0.2)" : 
+                                                 agent.status === "break" ? "rgba(255, 165, 0, 0.2)" : 
+                                                 "rgba(255, 118, 133, 0.2)"}` 
                             }}>
-                              {agent.status}
+                              {displayAgentStatus(agent.status)}
                             </span>
                           </td>
+                          <td style={{ padding: "15px 14px" }}>{formatDateTime(agent.loginTime)}</td>
+                          <td style={{ padding: "15px 14px" }}>{formatDuration(agent.activeSessionDuration)}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.breakCount}</td>
+                          <td style={{ padding: "15px 14px" }}>{formatDuration(agent.totalBreakDuration)}</td>
+                          <td style={{ padding: "15px 14px" }}>{agent.status === "break" ? formatDuration(agent.currentBreakDuration) : "00:00:00"}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.calls}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.connected}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.positive}</td>
@@ -1549,6 +1713,61 @@ const AdminDashboard = () => {
                     <span>{label}</span>
                   </button>
                 ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "28px 32px", maxWidth: "930px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                  <h2 style={{ margin: 0, fontSize: "22px" }}>Grouped Reports</h2>
+                  <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
+                    Today | Yesterday | Older
+                  </span>
+                </div>
+                <div style={{ marginTop: "22px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div style={{ marginTop: "22px", display: "grid", gap: "20px" }}>
+                  {groupedReportRows.map(([label, rows]) => (
+                    <div key={label}>
+                      <div style={{ display: "flex", justifyContent: "space-between", color: "#9da6c3", marginBottom: "10px" }}>
+                        <strong>{label}</strong>
+                        <span>{rows.length} newest first</span>
+                      </div>
+                      <div className="admin-scroll" style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", minWidth: "780px", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                              {["REF ID", "AGENT", "STATUS", "DISPOSITION", "DATE"].map((heading) => (
+                                <th key={heading} style={{ padding: "11px 10px", borderBottom: "1px solid rgba(122, 73, 255, 0.2)" }}>{heading}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.slice(0, 5).map((item) => {
+                              const tone = statusTone(item.call_status);
+
+                              return (
+                                <tr key={`${label}-${item.id}`} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.12)" }}>
+                                  <td style={{ padding: "12px 10px", color: "#c681ff" }}>{item.reference_id}</td>
+                                  <td style={{ padding: "12px 10px" }}>{item.employee_name}</td>
+                                  <td style={{ padding: "12px 10px" }}>
+                                    <span style={{ display: "inline-flex", padding: "5px 11px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
+                                      {item.call_status}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: "12px 10px" }}>{item.disposition}</td>
+                                  <td style={{ padding: "12px 10px", color: "#7d849f" }}>{item.created_at ? new Date(item.created_at).toLocaleString("en-IN") : "-"}</td>
+                                </tr>
+                              );
+                            })}
+                            {!rows.length ? (
+                              <tr>
+                                <td colSpan="5" style={{ padding: "14px 10px", color: "#596078" }}>No records</td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </section>
 
               <section style={{ ...panel, marginTop: "38px", padding: "36px 40px", maxWidth: "930px" }}>
@@ -2062,12 +2281,14 @@ const AdminDashboard = () => {
             </div>
           </div>
 
-          <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+          <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "16px" }}>
             {[
-              ["TOTAL CALLS TODAY", analytics.totalCalls, "All loaded responses", "#a855f7"],
+              ["TOTAL CALLS TODAY", analytics.totalCalls, "created_at::date = CURRENT_DATE", "#a855f7"],
               ["CONNECTED", analytics.connectedCalls, `${analytics.connectRate}% connect rate`, "#27d8ff"],
               ["POSITIVE / CONVERTED", analytics.positiveCalls, `${analytics.conversionRate}% conversion`, "#35e5a7"],
-              ["ACTIVE AGENTS", analytics.activeAgents, `${Math.max(analytics.activeAgents - agentPerformance.length, 0)} on break`, "#ff717e"],
+              ["NOT CONNECTED", analytics.notConnectedCalls, "Today only", "#ff717e"],
+              ["ACTIVE AGENTS", analytics.activeAgents, "Backend live status", "#ffd02d"],
+              ["AGENTS ON BREAK", analytics.agentsOnBreak, "Backend live status", "#ffa500"],
             ].map(([title, value, note, accent]) => (
               <article
                 key={title}

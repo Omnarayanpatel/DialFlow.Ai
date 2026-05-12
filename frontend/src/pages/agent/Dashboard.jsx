@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import { updateUserStatus } from "../../services/authService";
 import { createAgentResponse, getAgentDashboardData } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
 
@@ -67,32 +68,16 @@ const languageOptions = [
 ];
 
 const fallbackSummary = {
-  totalCalls: 48,
-  connectedCalls: 31,
-  notConnectedCalls: 17,
-  positiveCalls: 5,
+  totalCalls: 0,
+  connectedCalls: 0,
+  notConnectedCalls: 0,
+  positiveCalls: 0,
 };
 
-const fallbackRows = [
-  {
-    refId: "REF-1092",
-    status: "Connected",
-    disposition: "Positive",
-    subDisposition: "NA",
-  },
-  {
-    refId: "REF-1091",
-    status: "Connected",
-    disposition: "Call Back",
-    subDisposition: "Want Callback by Evening",
-  },
-  {
-    refId: "REF-1090",
-    status: "Not Connected",
-    disposition: "RNR",
-    subDisposition: "NA",
-  },
-];
+const fallbackRows = [];
+
+const getAgentSessionId = (user) =>
+  String(user.employeeId || user.id || user.email || user.name || "agent");
 
 const shell = {
   minHeight: "100vh",
@@ -178,6 +163,31 @@ const formatTime = (date) =>
     hour12: true,
   }).format(date);
 
+const toDateInputValue = (date) => {
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return offsetDate.toISOString().slice(0, 10);
+};
+
+const historyGroupLabel = (group) => {
+  if (group === "today") {
+    return "Today";
+  }
+
+  if (group === "yesterday") {
+    return "Yesterday";
+  }
+
+  return "Older records";
+};
+
+const normalizeRecords = (records) =>
+  records.map((item) => ({
+    refId: item.reference_id || `REF-${item.id}`,
+    status: normalizeCallStatus(item.call_status),
+    disposition: item.disposition || "NA",
+    subDisposition: item.sub_disposition || "NA",
+  }));
+
 const iconFor = (type) => {
   if (type === "grid") {
     return (
@@ -243,17 +253,20 @@ const lockIcon = (
 
 const Dashboard = () => {
   const { user, token } = useStore();
+  const agentSessionId = useMemo(() => getAgentSessionId(user), [user.employeeId, user.id, user.email, user.name]);
+  const loginTimeStorageKey = `agentLoginTime:${agentSessionId}`;
+  const workDurationStorageKey = `agentWorkDuration:${agentSessionId}`;
   const [activeView, setActiveView] = useState("dashboard");
   const [currentTime, setCurrentTime] = useState(new Date());
   const [loginTime] = useState(() => {
-    const storedLoginTime = sessionStorage.getItem("agentLoginTime");
+    const storedLoginTime = sessionStorage.getItem(loginTimeStorageKey);
 
     if (storedLoginTime) {
       return new Date(storedLoginTime);
     }
 
     const now = new Date();
-    sessionStorage.setItem("agentLoginTime", now.toISOString());
+    sessionStorage.setItem(loginTimeStorageKey, now.toISOString());
     return now;
   });
 
@@ -265,7 +278,7 @@ const Dashboard = () => {
   const [isInfoLocked, setIsInfoLocked] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [workDuration, setWorkDuration] = useState(() => {
-    const saved = sessionStorage.getItem("agentWorkDuration");
+    const saved = sessionStorage.getItem(workDurationStorageKey);
     return saved ? parseInt(saved, 10) : 0;
   });
 
@@ -280,8 +293,22 @@ const Dashboard = () => {
   const [subDispositionOther, setSubDispositionOther] = useState("");
   const [notes, setNotes] = useState("");
   const [summary, setSummary] = useState(fallbackSummary);
+  const [sessionStats, setSessionStats] = useState({ callsThisSession: 0 });
   const [rows, setRows] = useState(fallbackRows);
   const [historyRecords, setHistoryRecords] = useState([]);
+  const [historyPagination, setHistoryPagination] = useState({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 1,
+  });
+  const [historyFilters, setHistoryFilters] = useState({
+    date: "",
+    referenceId: "",
+    callStatus: "all",
+    disposition: "all",
+  });
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -302,7 +329,7 @@ const Dashboard = () => {
       if (!isPaused) {
         setWorkDuration((prev) => {
           const next = prev + 1;
-          sessionStorage.setItem("agentWorkDuration", next.toString());
+          sessionStorage.setItem(workDurationStorageKey, next.toString());
           return next;
         });
       }
@@ -311,7 +338,7 @@ const Dashboard = () => {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isPaused]);
+  }, [isPaused, workDurationStorageKey]);
 
   useEffect(() => {
     let ignore = false;
@@ -322,7 +349,15 @@ const Dashboard = () => {
       }
 
       try {
-        const data = await getAgentDashboardData(token);
+        setHistoryLoading(true);
+        const data = await getAgentDashboardData(token, {
+          loginTime: loginTime.toISOString(),
+          history: {
+            page: historyPagination.page,
+            pageSize: historyPagination.pageSize,
+            ...historyFilters,
+          },
+        });
 
         if (ignore) {
           return;
@@ -334,26 +369,22 @@ const Dashboard = () => {
           setZohoId((current) => current || lastWithIds.zoho_id || "");
           setDialerId((current) => current || lastWithIds.dialer_id || "");
         }
-        const normalizedRows = history.map((item) => ({
-          refId: item.reference_id || `REF-${item.id}`,
-          status: normalizeCallStatus(item.call_status),
-          disposition: item.disposition || "NA",
-          subDisposition: item.sub_disposition || "NA",
-        }));
 
         setHistoryRecords(history);
-        setRows(normalizedRows.length ? normalizedRows : fallbackRows);
-        setSummary({
-          totalCalls: data.summary?.totalCalls || history.length || 0,
-          connectedCalls: history.filter((item) => normalizeCallStatus(item.call_status) === "Connected").length,
-          notConnectedCalls: history.filter((item) => normalizeCallStatus(item.call_status) === "Not Connected").length,
-          positiveCalls: history.filter((item) => item.disposition === "Positive").length,
-        });
+        setHistoryPagination((current) => ({ ...current, ...(data.pagination || {}) }));
+        setRows(normalizeRecords(data.recentToday || []));
+        setSummary(data.summary || fallbackSummary);
+        setSessionStats(data.session || { callsThisSession: 0 });
       } catch (_error) {
         if (!ignore) {
           setRows(fallbackRows);
           setHistoryRecords([]);
           setSummary(fallbackSummary);
+          setSessionStats({ callsThisSession: 0 });
+        }
+      } finally {
+        if (!ignore) {
+          setHistoryLoading(false);
         }
       }
     };
@@ -363,7 +394,16 @@ const Dashboard = () => {
     return () => {
       ignore = true;
     };
-  }, [token]);
+  }, [
+    token,
+    loginTime,
+    historyPagination.page,
+    historyPagination.pageSize,
+    historyFilters.date,
+    historyFilters.referenceId,
+    historyFilters.callStatus,
+    historyFilters.disposition,
+  ]);
 
   const resetForm = () => {
     setReferenceId("");
@@ -380,11 +420,7 @@ const Dashboard = () => {
 
   const syncStatus = async (status) => {
     try {
-      await fetch("http://localhost:5000/api/auth/status", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ status }),
-      });
+      await updateUserStatus(status, token);
     } catch (err) {
       console.error("Failed to sync status:", err);
     }
@@ -392,6 +428,10 @@ const Dashboard = () => {
 
   const handleLogout = async () => {
     await syncStatus("Offline");
+    sessionStorage.removeItem(loginTimeStorageKey);
+    sessionStorage.removeItem(workDurationStorageKey);
+    sessionStorage.removeItem("agentLoginTime");
+    sessionStorage.removeItem("agentWorkDuration");
     localStorage.clear();
     window.location.reload();
   };
@@ -449,8 +489,25 @@ const Dashboard = () => {
           subDisposition: created.sub_disposition || "NA",
         },
         ...current,
-      ]);
-      setHistoryRecords((current) => [created, ...current]);
+      ].slice(0, 5));
+      const createdDate = created.created_at ? toDateInputValue(new Date(created.created_at)) : toDateInputValue(new Date());
+      const matchesCurrentHistory =
+        (!historyFilters.date || historyFilters.date === createdDate) &&
+        (!historyFilters.referenceId ||
+          (created.reference_id || "").toLowerCase().includes(historyFilters.referenceId.toLowerCase())) &&
+        (historyFilters.callStatus === "all" || created.call_status === historyFilters.callStatus) &&
+        (historyFilters.disposition === "all" || created.disposition === historyFilters.disposition);
+
+      setHistoryRecords((current) => {
+        if (historyPagination.page !== 1 || !matchesCurrentHistory) {
+          return current;
+        }
+
+        return [{ ...created, history_group: "today" }, ...current].slice(0, historyPagination.pageSize);
+      });
+      if (matchesCurrentHistory) {
+        setHistoryPagination((current) => ({ ...current, total: current.total + 1 }));
+      }
 
       setSummary((current) => ({
         totalCalls: current.totalCalls + 1,
@@ -462,8 +519,12 @@ const Dashboard = () => {
           normalizeCallStatus(created.call_status) === "Not Connected"
             ? current.notConnectedCalls + 1
             : current.notConnectedCalls,
-        positiveCalls: created.disposition === "Positive" ? current.positiveCalls + 1 : current.positiveCalls,
+        positiveCalls:
+          created.disposition === "Positive" || created.disposition === "Already Positive"
+            ? current.positiveCalls + 1
+            : current.positiveCalls,
       }));
+      setSessionStats((current) => ({ callsThisSession: current.callsThisSession + 1 }));
 
       setFeedback("Response submitted successfully.");
       if (created.zoho_id || created.dialer_id) {
@@ -484,6 +545,15 @@ const Dashboard = () => {
       setSubmitting(false);
     }
   };
+
+  const historyRowsWithSections = historyRecords.flatMap((item, index) => {
+    const currentGroup = item.history_group || "older";
+    const previousGroup = historyRecords[index - 1]?.history_group || null;
+
+    return currentGroup !== previousGroup
+      ? [{ type: "section", id: `section-${currentGroup}-${index}`, label: historyGroupLabel(currentGroup) }, item]
+      : [item];
+  });
 
   return (
     <div style={shell}>
@@ -515,17 +585,78 @@ const Dashboard = () => {
           .logout-btn:hover {
             color: #ff7a85 !important;
           }
+
+          .agent-shell-grid {
+            display: grid;
+            grid-template-columns: 364px minmax(0, 1fr);
+            min-height: 100vh;
+          }
+
+          .agent-summary-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
+
+          .agent-form-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
+
+          .agent-call-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+
+          .history-filter-grid {
+            display: grid;
+            grid-template-columns: 1.2fr repeat(3, minmax(160px, 1fr)) 120px;
+            gap: 14px;
+          }
+
+          .history-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+          }
+
+          @media (max-width: 1180px) {
+            .agent-shell-grid {
+              grid-template-columns: 1fr;
+            }
+
+            .agent-sidebar {
+              position: static;
+            }
+
+            .agent-summary-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .agent-form-grid,
+            .agent-call-grid,
+            .history-filter-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+          }
+
+          @media (max-width: 720px) {
+            .agent-main {
+              padding: 22px 16px !important;
+            }
+
+            .agent-summary-grid,
+            .agent-form-grid,
+            .agent-call-grid,
+            .history-filter-grid {
+              grid-template-columns: 1fr;
+            }
+          }
         `}
       </style>
 
       <div
+        className="agent-shell-grid"
         style={{
-          display: "grid",
-          gridTemplateColumns: "364px minmax(0, 1fr)",
-          minHeight: "100vh",
         }}
       >
         <aside
+          className="agent-sidebar"
           style={{
             background: "linear-gradient(180deg, rgba(12,11,25,0.98) 0%, rgba(9,8,18,0.98) 100%)",
             borderRight: "1px solid rgba(114, 74, 246, 0.24)",
@@ -672,7 +803,7 @@ const Dashboard = () => {
           </div>
         </aside>
 
-        <main style={{ padding: "34px 40px 34px" }}>
+        <main className="agent-main" style={{ padding: "34px 40px 34px" }}>
           {activeView === "history" ? (
             <section style={{ ...panel, padding: "30px 34px" }}>
               <div
@@ -687,7 +818,7 @@ const Dashboard = () => {
                 <div>
                   <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 600 }}>My history</h1>
                   <div style={{ marginTop: "8px", fontSize: "16px", color: "#b9b2d3" }}>
-                    All submitted call responses
+                    Today, yesterday, and older call responses
                   </div>
                 </div>
                 <button
@@ -706,7 +837,74 @@ const Dashboard = () => {
                 </button>
               </div>
 
-              <div style={{ marginTop: "24px", overflowX: "auto" }}>
+              <div className="history-filter-grid" style={{ marginTop: "24px" }}>
+                <input
+                  className="crm-input"
+                  style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                  placeholder="Search Reference ID"
+                  value={historyFilters.referenceId}
+                  onChange={(event) => {
+                    setHistoryFilters((current) => ({ ...current, referenceId: event.target.value }));
+                    setHistoryPagination((current) => ({ ...current, page: 1 }));
+                  }}
+                />
+                <input
+                  className="crm-input"
+                  type="date"
+                  style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                  value={historyFilters.date}
+                  onChange={(event) => {
+                    setHistoryFilters((current) => ({ ...current, date: event.target.value }));
+                    setHistoryPagination((current) => ({ ...current, page: 1 }));
+                  }}
+                />
+                <select
+                  className="crm-select"
+                  style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                  value={historyFilters.callStatus}
+                  onChange={(event) => {
+                    setHistoryFilters((current) => ({ ...current, callStatus: event.target.value }));
+                    setHistoryPagination((current) => ({ ...current, page: 1 }));
+                  }}
+                >
+                  <option value="all">All statuses</option>
+                  {callStatusOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+                <select
+                  className="crm-select"
+                  style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                  value={historyFilters.disposition}
+                  onChange={(event) => {
+                    setHistoryFilters((current) => ({ ...current, disposition: event.target.value }));
+                    setHistoryPagination((current) => ({ ...current, page: 1 }));
+                  }}
+                >
+                  <option value="all">All dispositions</option>
+                  {dispositionOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+                <select
+                  className="crm-select"
+                  style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                  value={historyPagination.pageSize}
+                  onChange={(event) => {
+                    setHistoryPagination((current) => ({
+                      ...current,
+                      page: 1,
+                      pageSize: Number(event.target.value),
+                    }));
+                  }}
+                >
+                  {[10, 25, 50].map((size) => (
+                    <option key={size} value={size}>{size} rows</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="history-table-wrap" style={{ marginTop: "24px" }}>
                 <table style={{ width: "100%", minWidth: "1050px", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ color: "#8d86aa", textAlign: "left", fontSize: "14px" }}>
@@ -728,8 +926,24 @@ const Dashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {historyRecords.length ? (
-                      historyRecords.map((item) => {
+                    {historyLoading ? (
+                      <tr>
+                        <td colSpan="9" style={{ padding: "28px 12px", color: "#a9a1c3", textAlign: "center" }}>
+                          Loading history...
+                        </td>
+                      </tr>
+                    ) : historyRowsWithSections.length ? (
+                      historyRowsWithSections.map((item) => {
+                        if (item.type === "section") {
+                          return (
+                            <tr key={item.id}>
+                              <td colSpan="9" style={{ padding: "18px 12px 10px", color: "#d9b7ff", fontWeight: 700, borderBottom: "1px solid rgba(114, 74, 246, 0.16)" }}>
+                                {item.label}
+                              </td>
+                            </tr>
+                          );
+                        }
+
                         const status = normalizeCallStatus(item.call_status);
                         const tone = statusTone(status);
 
@@ -772,6 +986,59 @@ const Dashboard = () => {
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              <div
+                style={{
+                  marginTop: "20px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "14px",
+                  flexWrap: "wrap",
+                  color: "#a9a1c3",
+                }}
+              >
+                <div>
+                  Page {historyPagination.page} of {historyPagination.totalPages} | {historyPagination.total} records
+                </div>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button
+                    type="button"
+                    disabled={historyPagination.page <= 1}
+                    onClick={() => setHistoryPagination((current) => ({ ...current, page: Math.max(current.page - 1, 1) }))}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: "10px",
+                      border: "1px solid rgba(166, 108, 255, 0.34)",
+                      background: historyPagination.page <= 1 ? "rgba(255,255,255,0.04)" : "rgba(122, 73, 255, 0.14)",
+                      color: "#f5f1ff",
+                      cursor: historyPagination.page <= 1 ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={historyPagination.page >= historyPagination.totalPages}
+                    onClick={() =>
+                      setHistoryPagination((current) => ({
+                        ...current,
+                        page: Math.min(current.page + 1, current.totalPages),
+                      }))
+                    }
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: "10px",
+                      border: "1px solid rgba(166, 108, 255, 0.34)",
+                      background: historyPagination.page >= historyPagination.totalPages ? "rgba(255,255,255,0.04)" : "rgba(122, 73, 255, 0.14)",
+                      color: "#f5f1ff",
+                      cursor: historyPagination.page >= historyPagination.totalPages ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </section>
           ) : activeView === "profile" ? (
@@ -825,24 +1092,36 @@ const Dashboard = () => {
           </div>
 
           <section
+            className="agent-summary-grid"
             style={{
               marginTop: "28px",
               display: "grid",
-              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
               gap: "18px",
             }}
           >
             {[
-              { title: "TODAY'S CALLS", value: summary.totalCalls, note: "6 from\nyesterday", accent: "#c387ff" },
-              { title: "CONNECTED", value: summary.connectedCalls, note: "64.6% connect\nrate", accent: "#34d5ff" },
-              { title: "NOT CONNECTED", value: summary.notConnectedCalls, note: "RNR / Switch off", accent: "#ff7a85" },
-              { title: "POSITIVE", value: summary.positiveCalls, note: "10.4%\nconversion", accent: "#54ebb2" },
+              { title: "TODAY'S CALLS", value: summary.totalCalls, note: "Current day only", accent: "#c387ff" },
+              {
+                title: "TODAY'S CONNECTED",
+                value: summary.connectedCalls,
+                note: `${summary.totalCalls ? Math.round((summary.connectedCalls / summary.totalCalls) * 100) : 0}% connect rate`,
+                accent: "#34d5ff",
+              },
+              { title: "NOT CONNECTED", value: summary.notConnectedCalls, note: "Current day only", accent: "#ff7a85" },
+              {
+                title: "TODAY'S POSITIVE",
+                value: summary.positiveCalls,
+                note: `${summary.totalCalls ? Math.round((summary.positiveCalls / summary.totalCalls) * 100) : 0}% conversion`,
+                accent: "#54ebb2",
+              },
+              { title: "CALLS THIS SESSION", value: sessionStats.callsThisSession, note: "Since login", accent: "#ffd166" },
+              { title: "SESSION DURATION", value: formatDuration(workDuration), note: `Login ${formatTime(loginTime)}`, accent: "#9bdcff" },
             ].map((item) => (
               <article style={{ ...panel, padding: "22px 24px" }} key={item.title}>
                 <div style={{ fontSize: "16px", color: "#a9a1c3", lineHeight: 1.1, maxWidth: "120px" }}>
                   {item.title}
                 </div>
-                <div style={{ marginTop: "18px", fontSize: "52px", lineHeight: 1, color: item.accent }}>
+                <div style={{ marginTop: "18px", fontSize: item.title === "SESSION DURATION" ? "34px" : "52px", lineHeight: 1, color: item.accent }}>
                   {item.value}
                 </div>
                 <div style={{ marginTop: "16px", color: "#787196", fontSize: "16px", whiteSpace: "pre-line" }}>
@@ -884,10 +1163,10 @@ const Dashboard = () => {
             </div>
 
             <div
+              className="agent-form-grid"
               style={{
                 marginTop: "18px",
                 display: "grid",
-                gridTemplateColumns: "repeat(4, minmax(0, 1fr))", // Adjusted to 4 columns for dialer ID
                 gap: "20px",
               }}
             >
@@ -936,10 +1215,10 @@ const Dashboard = () => {
             </div>
 
             <div
+              className="agent-call-grid"
               style={{
                 marginTop: "18px",
                 display: "grid",
-                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                 gap: "20px",
               }}
             >
