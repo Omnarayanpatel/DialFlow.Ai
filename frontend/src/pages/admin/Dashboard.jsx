@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import { getAgentMonitoring, registerUser } from "../../services/authService";
+import AdminRanking from "../../components/ranking/AdminRanking";
+import { deleteAgent, getAgentMonitoring, registerUser, updateAgent } from "../../services/authService";
 import { downloadResponsesExport, getAllResponses } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
 
@@ -91,6 +92,16 @@ const iconFor = (type) => {
         <path d="M12 4V15" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" />
         <path d="M8 11L12 15L16 11" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         <path d="M5 20H19" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (type === "logout") {
+    return (
+      <svg {...common}>
+        <path d="M10 5H6.5C5.7 5 5 5.7 5 6.5V17.5C5 18.3 5.7 19 6.5 19H10" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" />
+        <path d="M14 8L18 12L14 16" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M18 12H9" stroke="#aeb5d4" strokeWidth="2" strokeLinecap="round" />
       </svg>
     );
   }
@@ -211,6 +222,15 @@ const AdminDashboard = () => {
   const [agentSearch, setAgentSearch] = useState("");
   const [agentStatusFilter, setAgentStatusFilter] = useState("all");
   const [agentViewMode, setAgentViewMode] = useState("grid");
+  const [editingAgent, setEditingAgent] = useState(null);
+  const [deletingAgent, setDeletingAgent] = useState(null);
+  const [isAgentActionLoading, setIsAgentActionLoading] = useState(false);
+  const [editAgentForm, setEditAgentForm] = useState({
+    name: "",
+    employeeId: "",
+    password: "",
+    role: "agent",
+  });
   const [reportType, setReportType] = useState("daily");
   const [reportDateFrom, setReportDateFrom] = useState("2026-04-21");
   const [reportDateTo, setReportDateTo] = useState("2026-04-28");
@@ -239,6 +259,10 @@ const AdminDashboard = () => {
     name: "",
     password: "",
   });
+
+  useEffect(() => {
+    document.title = "Admin Dashboard | Dialflow.ai";
+  }, []);
 
   const exportColumnOptions = [
     ["reference_id", "Ref ID"],
@@ -346,9 +370,11 @@ const AdminDashboard = () => {
       const initials = agent.name?.split(" ").filter(Boolean).slice(0, 2).map(p => p[0]).join("").toUpperCase() || "AG";
 
       return {
+        dbId: agent.id,
         id: agent.employee_id,
         name: agent.name,
         zohoId: agent.zoho_id || "NA",
+        role: agent.role || "agent",
         calls: stats.calls,
         connected: stats.connected,
         positive: stats.positive,
@@ -675,6 +701,81 @@ const AdminDashboard = () => {
     }
   };
 
+  const openEditAgent = (agent) => {
+    setEditingAgent(agent);
+    setEditAgentForm({
+      name: agent.name || "",
+      employeeId: agent.id || "",
+      password: "",
+      role: agent.role || "agent",
+    });
+  };
+
+  const closeAgentModal = () => {
+    if (isAgentActionLoading) {
+      return;
+    }
+
+    setEditingAgent(null);
+    setDeletingAgent(null);
+    setEditAgentForm({ name: "", employeeId: "", password: "", role: "agent" });
+  };
+
+  const handleUpdateAgent = async (event) => {
+    event.preventDefault();
+
+    if (!editingAgent) {
+      return;
+    }
+
+    if (!editAgentForm.name.trim() || !editAgentForm.employeeId.trim()) {
+      setFeedback("Agent name and Employee ID required hain.");
+      return;
+    }
+
+    setIsAgentActionLoading(true);
+
+    try {
+      await updateAgent(
+        editingAgent.dbId,
+        {
+          name: editAgentForm.name,
+          employeeId: editAgentForm.employeeId,
+          password: editAgentForm.password,
+          role: editAgentForm.role,
+        },
+        token
+      );
+      setEditingAgent(null);
+      setEditAgentForm({ name: "", employeeId: "", password: "", role: "agent" });
+      await Promise.all([loadAgents(), loadResponses()]);
+      setFeedback("Agent updated successfully.");
+    } catch (error) {
+      setFeedback(error.message || "Agent update nahi ho paya.");
+    } finally {
+      setIsAgentActionLoading(false);
+    }
+  };
+
+  const handleDeleteAgent = async () => {
+    if (!deletingAgent) {
+      return;
+    }
+
+    setIsAgentActionLoading(true);
+
+    try {
+      await deleteAgent(deletingAgent.dbId, token);
+      setDeletingAgent(null);
+      await Promise.all([loadAgents(), loadResponses()]);
+      setFeedback("Agent deleted successfully.");
+    } catch (error) {
+      setFeedback(error.message || "Agent delete nahi ho paya.");
+    } finally {
+      setIsAgentActionLoading(false);
+    }
+  };
+
   const clearResponseFilters = () => {
     setSearch("");
     setStatusFilter("all");
@@ -893,7 +994,7 @@ const AdminDashboard = () => {
     printWindow.document.write(`
       <html>
         <head>
-          <title>${reportType} report</title>
+          <title>Dialflow.ai ${reportType} report</title>
           <style>
             body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
             h1 { margin-bottom: 4px; }
@@ -907,7 +1008,8 @@ const AdminDashboard = () => {
           </style>
         </head>
         <body>
-          <h1>${reportType} report</h1>
+          <h1>Dialflow.ai ${reportType} report</h1>
+          <div style="color:#6b7280;margin-bottom:6px;">Powered by Dhritii.ai</div>
           <div>${reportDateFrom} to ${reportDateTo} | ${reportRows.length} records</div>
           <div class="kpis">
             ${reportKpis
@@ -953,15 +1055,204 @@ const AdminDashboard = () => {
             background: rgba(180, 169, 205, 0.65);
             border-radius: 999px;
           }
+
+          .admin-soft-panel {
+            box-shadow: 0 18px 56px rgba(0, 0, 0, 0.24);
+          }
+
+          .admin-hover-card,
+          .admin-action-button {
+            transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+          }
+
+          .admin-hover-card:hover,
+          .admin-action-button:hover {
+            transform: translateY(-1px);
+            border-color: rgba(168, 85, 247, 0.72) !important;
+            box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28);
+          }
+
+          .admin-polished-table th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #121027;
+          }
+
+          .admin-polished-table tbody tr {
+            transition: background 140ms ease;
+          }
+
+          .admin-polished-table tbody tr:hover {
+            background: rgba(122, 73, 255, 0.08);
+          }
+
+          .admin-empty-state {
+            min-height: 120px;
+            display: grid;
+            place-items: center;
+            text-align: center;
+            color: #7d849f;
+            border: 1px dashed rgba(122, 73, 255, 0.32);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.025);
+          }
+
+          .admin-section-heading {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+          }
+
           @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
           }
+
+          @media (max-width: 1180px) {
+            .admin-app-shell {
+              grid-template-columns: 1fr !important;
+            }
+
+            .admin-sidebar {
+              border-right: 0 !important;
+              border-bottom: 1px solid rgba(122, 73, 255, 0.28);
+            }
+
+            .admin-sidebar nav {
+              display: flex;
+              overflow-x: auto;
+              padding: 0 12px 12px;
+              -webkit-overflow-scrolling: touch;
+            }
+
+            .admin-sidebar nav button {
+              min-width: 150px;
+              border-left: 0 !important;
+              border-bottom: 3px solid transparent;
+              justify-content: center;
+              padding: 12px 16px !important;
+            }
+
+            .admin-sidebar > div:nth-of-type(2),
+            .admin-sidebar > div:nth-of-type(3) {
+              display: none !important;
+            }
+
+            .admin-sidebar > button {
+              margin-top: 0 !important;
+              justify-content: center;
+              padding: 14px 18px !important;
+            }
+
+            .admin-main {
+              padding: 22px !important;
+              overflow-x: hidden !important;
+            }
+
+            .admin-kpi-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+
+            .admin-two-grid,
+            .admin-agent-grid,
+            .admin-create-grid {
+              grid-template-columns: 1fr !important;
+            }
+
+            .admin-filter-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+
+            .admin-toolbar {
+              align-items: stretch !important;
+              flex-wrap: wrap;
+            }
+
+            .admin-toolbar-actions {
+              width: 100%;
+              flex-wrap: wrap;
+            }
+
+            .admin-toolbar-actions > * {
+              flex: 1 1 180px;
+            }
+          }
+
+          @media (max-width: 680px) {
+            .admin-main {
+              padding: 16px !important;
+            }
+
+            .admin-toast {
+              left: 12px !important;
+              right: 12px !important;
+              top: 12px !important;
+            }
+
+            .admin-kpi-grid,
+            .admin-filter-grid,
+            .admin-mini-grid,
+            .admin-export-actions {
+              grid-template-columns: 1fr !important;
+            }
+
+            .admin-agent-card {
+              padding: 22px !important;
+              min-height: 0 !important;
+            }
+
+            .admin-agent-header {
+              grid-template-columns: 56px minmax(0, 1fr) !important;
+              gap: 14px !important;
+            }
+
+            .admin-avatar {
+              width: 56px !important;
+              height: 56px !important;
+              font-size: 20px !important;
+            }
+
+            .admin-modal {
+              padding: 18px !important;
+            }
+
+            .admin-main h1 {
+              font-size: 24px !important;
+            }
+
+            .admin-main input,
+            .admin-main select,
+            .admin-main button {
+              max-width: 100%;
+            }
+          }
         `}
       </style>
 
-      <div style={{ display: "grid", gridTemplateColumns: "294px minmax(980px, 1fr)", minHeight: "100vh" }}>
+      {feedback ? (
+        <div
+          style={{
+            position: "fixed",
+            top: "18px",
+            right: "18px",
+            zIndex: 30,
+            ...panel,
+            padding: "12px 16px",
+            color: "#d9b7ff",
+            boxShadow: "0 18px 48px rgba(0,0,0,0.35)",
+          }}
+          className="admin-toast"
+        >
+          {feedback}
+        </div>
+      ) : null}
+
+      <div className="admin-app-shell" style={{ display: "grid", gridTemplateColumns: "294px minmax(980px, 1fr)", minHeight: "100vh" }}>
         <aside
+          className="admin-sidebar"
           style={{
             background: "#080710",
             borderRight: "1px solid rgba(122, 73, 255, 0.28)",
@@ -985,8 +1276,8 @@ const AdminDashboard = () => {
                 <span style={{ color: "#c88cff", fontSize: "22px" }}>*</span>
               </div>
               <div>
-                <div style={{ fontSize: "20px", fontWeight: 700 }}>CallCenter AI</div>
-                <div style={{ marginTop: "6px", color: "#a6a1bd", fontSize: "14px" }}>Admin Portal v2.0</div>
+                <div style={{ fontSize: "20px", fontWeight: 700 }}>Dialflow.ai</div>
+                <div style={{ marginTop: "6px", color: "#a6a1bd", fontSize: "14px" }}>Powered by Dhritii.ai</div>
               </div>
             </div>
           </div>
@@ -1033,6 +1324,7 @@ const AdminDashboard = () => {
             {[
               ["overview", "Overview", "grid"],
               ["analytics", "Analytics", "chart"],
+              ["ranking", "Ranking", "chart"],
               ["responses", "All responses", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
@@ -1080,22 +1372,24 @@ const AdminDashboard = () => {
               cursor: "pointer",
             }}
           >
-            {iconFor("download")}
+            {iconFor("logout")}
             Logout
           </button>
         </aside>
 
-        <main className="admin-scroll" style={{ padding: "32px", overflowX: "auto" }}>
-          {activeView === "analytics" ? (
+        <main className="admin-main admin-scroll" style={{ padding: "32px", overflowX: "auto" }}>
+          {activeView === "ranking" ? (
+            <AdminRanking token={token} />
+          ) : activeView === "analytics" ? (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
                 <div>
                   <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Analytics</h1>
                   <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
                     Detailed performance insights | All agents
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: "12px" }}>
+                <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px" }}>
                   <select className="admin-select" style={{ ...input, width: "190px" }} defaultValue="today">
                     <option value="today">Today</option>
                     <option value="week">This week</option>
@@ -1107,7 +1401,7 @@ const AdminDashboard = () => {
                 </div>
               </div>
 
-              <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+              <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
                 {[
                   ["TOTAL CALLS", analytics.totalCalls, "5.2% vs yesterday", "#a855f7"],
                   ["CONNECT RATE", `${analytics.connectRate}%`, "1.4% vs yesterday", "#27d8ff"],
@@ -1125,7 +1419,7 @@ const AdminDashboard = () => {
                 ))}
               </section>
 
-              <section style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
+              <section className="admin-kpi-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
                 {[
                   ["PEAK HOUR", "11 AM", `${Math.max(analytics.connectedCalls, analytics.notConnectedCalls)} calls in that hour`, "#8b5cf6"],
                   ["TOP DISPOSITION", topDisposition.label, `${topDisposition.value} calls`, "#26e6ad"],
@@ -1175,7 +1469,7 @@ const AdminDashboard = () => {
                 </svg>
               </section>
 
-              <section style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "18px" }}>
+              <section className="admin-two-grid" style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "18px" }}>
                 <article style={{ ...panel, padding: "28px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <h2 style={{ margin: 0, fontSize: "19px" }}>Disposition breakdown</h2>
@@ -1214,7 +1508,7 @@ const AdminDashboard = () => {
                 </article>
               </section>
 
-              <section style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "18px" }}>
+              <section className="admin-two-grid" style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "18px" }}>
                 <article style={{ ...panel, padding: "28px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <h2 style={{ margin: 0, fontSize: "19px" }}>Sub-disposition breakdown</h2>
@@ -1260,7 +1554,7 @@ const AdminDashboard = () => {
             </>
           ) : activeView === "responses" ? (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
                 <div>
                   <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>All responses</h1>
                   <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
@@ -1272,7 +1566,7 @@ const AdminDashboard = () => {
                 </button>
               </div>
 
-              <section style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "18px" }}>
+              <section className="admin-kpi-grid" style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "18px" }}>
                 {[
                   ["TOTAL", analytics.totalCalls, "#c681ff"],
                   ["CONNECTED", analytics.connectedCalls, "#27d8ff"],
@@ -1429,14 +1723,14 @@ const AdminDashboard = () => {
             </>
           ) : activeView === "agents" ? (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
                 <div>
                   <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Agents</h1>
                   <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px", lineHeight: 1.15 }}>
                     Performance overview |<br /> All team members
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+                <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
                   <input
                     style={{ ...input, width: "170px", fontSize: "22px", padding: "15px 18px" }}
                     placeholder="Search agent..."
@@ -1478,7 +1772,7 @@ const AdminDashboard = () => {
                 </div>
               </div>
 
-              <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px" }}>
+              <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px" }}>
                 {[
                   ["TOTAL AGENTS", agentCards.length, "#c681ff"],
                   ["ONLINE NOW", agentCards.filter((agent) => agent.status === "online").length, "#35e5a7"],
@@ -1495,12 +1789,13 @@ const AdminDashboard = () => {
               </section>
 
               {agentViewMode === "grid" ? (
-                <section style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "22px" }}>
+                <section className="admin-agent-grid" style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "22px" }}>
                   {filteredAgentCards.length ? (
                     filteredAgentCards.map((agent) => (
-                      <article key={agent.id} style={{ ...panel, padding: "36px", minHeight: "420px" }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "78px 1fr", gap: "20px", alignItems: "center" }}>
+                      <article className="admin-agent-card" key={agent.dbId} style={{ ...panel, padding: "36px", minHeight: "420px" }}>
+                        <div className="admin-agent-header" style={{ display: "grid", gridTemplateColumns: "78px 1fr", gap: "20px", alignItems: "center" }}>
                           <div
+                            className="admin-avatar"
                             style={{
                               width: "78px",
                               height: "78px",
@@ -1555,7 +1850,7 @@ const AdminDashboard = () => {
                           ))}
                         </div>
 
-                        <div style={{ marginTop: "16px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
+                        <div className="admin-mini-grid" style={{ marginTop: "16px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
                           {[
                             ["SESSION", formatDuration(agent.activeSessionDuration), "#ffd02d"],
                             ["BREAKS", agent.breakCount, "#ffa500"],
@@ -1603,6 +1898,12 @@ const AdminDashboard = () => {
                           >
                             {agent.badge}
                           </span>
+                          <button type="button" onClick={() => openEditAgent(agent)} style={{ ...ghostButton, padding: "7px 14px", borderRadius: "999px", fontSize: "14px" }}>
+                            Edit
+                          </button>
+                          <button type="button" onClick={() => setDeletingAgent(agent)} style={{ ...ghostButton, padding: "7px 14px", borderRadius: "999px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>
+                            Delete
+                          </button>
                         </div>
                       </article>
                     ))
@@ -1617,14 +1918,14 @@ const AdminDashboard = () => {
                   <table style={{ width: "100%", minWidth: "1500px", borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ textAlign: "left", color: "#6d728d", letterSpacing: "0.06em" }}>
-                        {["AGENT", "EMPLOYEE ID", "STATUS", "LOGIN", "SESSION", "BREAKS", "BREAK TIME", "CURRENT BREAK", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION"].map((heading) => (
+                        {["AGENT", "EMPLOYEE ID", "STATUS", "LOGIN", "SESSION", "BREAKS", "BREAK TIME", "CURRENT BREAK", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION", "ACTIONS"].map((heading) => (
                           <th key={heading} style={{ padding: "14px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {filteredAgentCards.map((agent) => (
-                        <tr key={agent.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                        <tr key={agent.dbId} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
                           <td style={{ padding: "15px 14px" }}>{agent.name}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.id}</td>
                           <td style={{ padding: "15px 14px" }}>
@@ -1654,6 +1955,16 @@ const AdminDashboard = () => {
                           <td style={{ padding: "15px 14px" }}>{agent.positive}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.connectRate}%</td>
                           <td style={{ padding: "15px 14px" }}>{agent.conversionRate}%</td>
+                          <td style={{ padding: "15px 14px" }}>
+                            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                              <button type="button" onClick={() => openEditAgent(agent)} style={{ ...ghostButton, padding: "8px 12px", borderRadius: "10px", fontSize: "14px" }}>
+                                Edit
+                              </button>
+                              <button type="button" onClick={() => setDeletingAgent(agent)} style={{ ...ghostButton, padding: "8px 12px", borderRadius: "10px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>
+                                Delete
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1663,7 +1974,7 @@ const AdminDashboard = () => {
             </>
           ) : activeView === "reports" ? (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
                 <div>
                   <h1 style={{ margin: 0, fontSize: "32px", fontWeight: 700 }}>Reports</h1>
                   <div style={{ marginTop: "12px", color: "#9da6c3", fontSize: "18px" }}>
@@ -1683,7 +1994,7 @@ const AdminDashboard = () => {
                 </div>
               </div>
 
-              <section style={{ marginTop: "38px", display: "grid", gridTemplateColumns: "270px 350px", gap: "12px", maxWidth: "760px" }}>
+              <section className="admin-filter-grid" style={{ marginTop: "38px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px", maxWidth: "760px" }}>
                 {[
                   ["daily", "Daily Report", "🗓"],
                   ["agent", "Agent-wise Report", "👤"],
@@ -1708,6 +2019,7 @@ const AdminDashboard = () => {
                       borderColor: reportType === id ? "rgba(168, 85, 247, 0.78)" : "rgba(154, 145, 176, 0.44)",
                       background: reportType === id ? "rgba(122, 73, 255, 0.16)" : "transparent",
                     }}
+                    className="admin-action-button"
                   >
                     <span>{icon}</span>
                     <span>{label}</span>
@@ -1715,8 +2027,8 @@ const AdminDashboard = () => {
                 ))}
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px 32px", maxWidth: "930px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px 32px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "22px" }}>Grouped Reports</h2>
                   <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
                     Today | Yesterday | Older
@@ -1730,8 +2042,8 @@ const AdminDashboard = () => {
                         <strong>{label}</strong>
                         <span>{rows.length} newest first</span>
                       </div>
-                      <div className="admin-scroll" style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", minWidth: "780px", borderCollapse: "collapse" }}>
+                      <div className="admin-scroll" style={{ overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                        <table className="admin-polished-table" style={{ width: "100%", minWidth: "780px", borderCollapse: "collapse" }}>
                           <thead>
                             <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
                               {["REF ID", "AGENT", "STATUS", "DISPOSITION", "DATE"].map((heading) => (
@@ -1745,7 +2057,7 @@ const AdminDashboard = () => {
 
                               return (
                                 <tr key={`${label}-${item.id}`} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.12)" }}>
-                                  <td style={{ padding: "12px 10px", color: "#c681ff" }}>{item.reference_id}</td>
+                                <td style={{ padding: "14px 12px", color: "#c681ff", fontWeight: 700 }}>{item.reference_id}</td>
                                   <td style={{ padding: "12px 10px" }}>{item.employee_name}</td>
                                   <td style={{ padding: "12px 10px" }}>
                                     <span style={{ display: "inline-flex", padding: "5px 11px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
@@ -1759,7 +2071,9 @@ const AdminDashboard = () => {
                             })}
                             {!rows.length ? (
                               <tr>
-                                <td colSpan="5" style={{ padding: "14px 10px", color: "#596078" }}>No records</td>
+                                <td colSpan="5" style={{ padding: "20px 12px" }}>
+                                  <div className="admin-empty-state">No records in this group.</div>
+                                </td>
                               </tr>
                             ) : null}
                           </tbody>
@@ -1770,11 +2084,14 @@ const AdminDashboard = () => {
                 </div>
               </section>
 
-              <section style={{ ...panel, marginTop: "38px", padding: "36px 40px", maxWidth: "930px" }}>
-                <h2 style={{ margin: 0, fontSize: "24px" }}>Report Configuration</h2>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "38px", padding: "32px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
+                  <h2 style={{ margin: 0, fontSize: "24px" }}>Report Configuration</h2>
+                  <span style={{ color: "#7d849f", fontSize: "14px" }}>Choose scope, then generate preview</span>
+                </div>
                 <div style={{ marginTop: "26px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
 
-                <div style={{ marginTop: "30px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "24px", alignItems: "end" }}>
+                <div className="admin-filter-grid" style={{ marginTop: "26px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "18px", alignItems: "end" }}>
                   <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
                     DATE FROM
                     <input
@@ -1821,7 +2138,8 @@ const AdminDashboard = () => {
                   <button
                     type="button"
                     onClick={() => setReportGenerated(true)}
-                    style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px" }}
+                    style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px", background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}
+                    className="admin-action-button"
                   >
                     Generate
                   </button>
@@ -1829,22 +2147,22 @@ const AdminDashboard = () => {
               </section>
 
               {reportGenerated ? (
-                <section style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center" }}>
+                <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
+                  <div className="admin-section-heading">
                     <div>
                       <h2 style={{ margin: 0, fontSize: "24px" }}>Report Preview</h2>
                       <div style={{ marginTop: "8px", color: "#9da6c3" }}>
                         {reportDateFrom} to {reportDateTo} | {reportRows.length} backend records
                       </div>
                     </div>
-                    <button type="button" onClick={() => downloadReport("csv")} style={ghostButton}>
+                    <button type="button" onClick={() => downloadReport("csv")} className="admin-action-button" style={ghostButton}>
                       Download CSV
                     </button>
                   </div>
 
-                  <section style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "14px" }}>
+                  <section className="admin-kpi-grid" style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "14px" }}>
                     {reportKpis.map(([title, value, accent]) => (
-                      <article key={title} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "18px" }}>
+                      <article key={title} style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "12px", padding: "18px" }}>
                         <div style={{ color: "#8f98b7", fontSize: "14px" }}>{title}</div>
                         <div style={{ marginTop: "10px", color: accent, fontSize: typeof value === "number" ? "30px" : "22px" }}>{value}</div>
                       </article>
@@ -1853,8 +2171,8 @@ const AdminDashboard = () => {
 
                   <section style={{ marginTop: "26px" }}>
                     {reportType === "daily" ? (
-                      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "18px" }}>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                      <div className="admin-two-grid" style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                           <h3 style={{ margin: 0 }}>Daily call volume trend</h3>
                           <svg viewBox="0 0 520 230" style={{ width: "100%", marginTop: "18px" }}>
                             {[0, 1, 2, 3, 4].map((line) => (
@@ -1867,7 +2185,7 @@ const AdminDashboard = () => {
                             ))}
                           </svg>
                         </article>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                           <h3 style={{ margin: 0 }}>Stacked status bar</h3>
                           <div style={{ marginTop: "28px", display: "grid", gap: "18px" }}>
                             {["Mon", "Tue", "Wed", "Thu", "Fri"].map((day, index) => (
@@ -1883,7 +2201,7 @@ const AdminDashboard = () => {
                         </article>
                       </div>
                     ) : reportType === "agent" ? (
-                      <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                      <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                         <h3 style={{ margin: 0 }}>Agent performance comparison</h3>
                         <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
                           {reportAgentStats.slice(0, 8).map((agent) => (
@@ -1899,8 +2217,8 @@ const AdminDashboard = () => {
                         </div>
                       </article>
                     ) : reportType === "disposition" ? (
-                      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: "18px" }}>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px", display: "grid", placeItems: "center" }}>
+                      <div className="admin-two-grid" style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px", display: "grid", placeItems: "center" }}>
                           <h3 style={{ justifySelf: "start", margin: 0 }}>Disposition doughnut</h3>
                           <div style={{ marginTop: "26px", width: "260px", height: "260px", borderRadius: "999px", background: "conic-gradient(#35e5a7 0 24%, #a855f7 24% 58%, #ff717e 58% 78%, #27d8ff 78% 100%)", display: "grid", placeItems: "center" }}>
                             <div style={{ width: "140px", height: "140px", borderRadius: "999px", background: "#121027", display: "grid", placeItems: "center", color: "#9da6c3" }}>
@@ -1908,7 +2226,7 @@ const AdminDashboard = () => {
                             </div>
                           </div>
                         </article>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                           <h3 style={{ margin: 0 }}>Percentage breakdown</h3>
                           <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
                             {reportDispositionStats.slice(0, 7).map((item) => (
@@ -1924,8 +2242,8 @@ const AdminDashboard = () => {
                         </article>
                       </div>
                     ) : (
-                      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: "18px" }}>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                      <div className="admin-two-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: "18px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                           <h3 style={{ margin: 0 }}>Positive trend</h3>
                           <svg viewBox="0 0 500 220" style={{ width: "100%", marginTop: "18px" }}>
                             {[0, 1, 2, 3, 4].map((line) => (
@@ -1937,7 +2255,7 @@ const AdminDashboard = () => {
                             ))}
                           </svg>
                         </article>
-                        <article style={{ background: "rgba(255,255,255,0.025)", borderRadius: "14px", padding: "22px" }}>
+                        <article style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "14px", padding: "22px" }}>
                           <h3 style={{ margin: 0 }}>Agent-wise conversion rate</h3>
                           <div style={{ marginTop: "22px", display: "grid", gap: "16px" }}>
                             {reportAgentStats.slice(0, 7).map((agent) => (
@@ -1955,8 +2273,8 @@ const AdminDashboard = () => {
                     )}
                   </section>
 
-                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto" }}>
-                    <table style={{ width: "100%", minWidth: "820px", borderCollapse: "collapse" }}>
+                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "820px", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
                           {["REF ID", "AGENT", "STATUS", "DISPOSITION", "SUB-DISP", "LANGUAGE"].map((heading) => (
@@ -1972,7 +2290,7 @@ const AdminDashboard = () => {
 
                           return (
                             <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
-                              <td style={{ padding: "14px 12px", color: "#c681ff" }}>{item.reference_id}</td>
+                              <td style={{ padding: "16px 12px", color: "#c681ff", fontWeight: 700 }}>{item.reference_id}</td>
                               <td style={{ padding: "14px 12px" }}>{item.employee_name}</td>
                               <td style={{ padding: "14px 12px" }}>
                                 <span style={{ display: "inline-flex", padding: "6px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
@@ -1985,6 +2303,13 @@ const AdminDashboard = () => {
                             </tr>
                           );
                         })}
+                        {!reportRows.length ? (
+                          <tr>
+                            <td colSpan="6" style={{ padding: "22px 12px" }}>
+                              <div className="admin-empty-state">No report rows match these filters.</div>
+                            </td>
+                          </tr>
+                        ) : null}
                       </tbody>
                     </table>
                   </div>
@@ -2020,7 +2345,7 @@ const AdminDashboard = () => {
                 </div>
               ) : (
               <>
-              <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px", maxWidth: "760px" }}>
+              <section className="admin-filter-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px", maxWidth: "860px" }}>
                 {[
                   ["csv", "CSV Export", "Comma-separated values - compatible with Google Sheets, any spreadsheet, and data tools.", ".csv"],
                   ["excel", "Excel Export", "Multi-sheet Excel file style - opens in Microsoft Excel and spreadsheet apps.", ".xls"],
@@ -2039,6 +2364,7 @@ const AdminDashboard = () => {
                       background: exportFormat === id ? "#18102f" : "#121027",
                       position: "relative",
                     }}
+                    className="admin-hover-card"
                   >
                     {exportFormat === id ? (
                       <span style={{ position: "absolute", right: "18px", top: "18px", width: "28px", height: "28px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#8b3ff4", color: "#fff", fontWeight: 700 }}>
@@ -2057,15 +2383,15 @@ const AdminDashboard = () => {
                 ))}
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "19px" }}>Filters</h2>
-                  <button type="button" onClick={() => { setExportStatus("all"); setExportDisposition("all"); setExportAgent("all"); setExportLanguage("all"); }} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>
+                  <button type="button" onClick={() => { setExportStatus("all"); setExportDisposition("all"); setExportAgent("all"); setExportLanguage("all"); }} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>
                     All data selected
                   </button>
                 </div>
                 <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                <div style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "18px" }}>
+                <div className="admin-kpi-grid" style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "18px" }}>
                   <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
                     Date from
                     <input type="date" style={{ ...input, marginTop: "8px" }} value={exportDateFrom} onChange={(event) => setExportDateFrom(event.target.value)} />
@@ -2112,16 +2438,16 @@ const AdminDashboard = () => {
                 </div>
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "19px" }}>Select columns to export</h2>
-                  <div style={{ display: "flex", gap: "10px" }}>
-                    <button type="button" onClick={selectAllExportColumns} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>Select all</button>
-                    <button type="button" onClick={clearExportColumns} style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px", color: "#7d849f" }}>Clear all</button>
+                  <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                    <button type="button" onClick={selectAllExportColumns} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>Select all</button>
+                    <button type="button" onClick={clearExportColumns} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px", color: "#7d849f" }}>Clear all</button>
                   </div>
                 </div>
                 <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                <div style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "12px" }}>
+                <div className="admin-filter-grid" style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "12px" }}>
                   {exportColumnOptions.map(([key, label]) => {
                     const checked = exportColumns.includes(key);
 
@@ -2154,15 +2480,15 @@ const AdminDashboard = () => {
                 </div>
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px", overflow: "hidden" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px", overflow: "hidden" }}>
+                <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "19px" }}>Data preview</h2>
                   <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
                     {exportRows.length} rows
                   </span>
                 </div>
-                <div className="admin-scroll" style={{ marginTop: "22px", overflowX: "auto" }}>
-                  <table style={{ width: "100%", minWidth: "720px", borderCollapse: "collapse" }}>
+                <div className="admin-scroll" style={{ marginTop: "22px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                  <table className="admin-polished-table" style={{ width: "100%", minWidth: "720px", borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px", letterSpacing: "0.06em" }}>
                         {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key, label]) => (
@@ -2171,7 +2497,7 @@ const AdminDashboard = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {exportRows.slice(0, 8).map((item) => {
+                      {exportColumns.length ? exportRows.slice(0, 8).map((item) => {
                         return (
                           <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
                             {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key]) => (
@@ -2181,14 +2507,23 @@ const AdminDashboard = () => {
                             ))}
                           </tr>
                         );
-                      })}
+                      }) : null}
+                      {!exportColumns.length || !exportRows.length ? (
+                        <tr>
+                          <td colSpan={Math.max(exportColumns.length, 1)} style={{ padding: "22px 12px" }}>
+                            <div className="admin-empty-state">
+                              {!exportColumns.length ? "Select at least one column to preview export data." : "No rows match the selected export filters."}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
                     </tbody>
                   </table>
                 </div>
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "19px" }}>Export</h2>
                   <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
                     {exportFormat.toUpperCase()} · {exportRows.length} rows · {exportColumns.length} columns
@@ -2208,12 +2543,13 @@ const AdminDashboard = () => {
                   </div>
                 )}
 
-                <div style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px" }}>
+                <div className="admin-export-actions" style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px" }}>
                   <button 
                     type="button" 
                     disabled={isExporting}
                     onClick={() => downloadCustomExport("csv")} 
-                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1 }}
+                    className="admin-action-button"
+                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1, background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}
                   >
                     {isExporting && exportFormat === "csv" ? "Exporting..." : "Download CSV"}
                   </button>
@@ -2221,7 +2557,8 @@ const AdminDashboard = () => {
                     type="button" 
                     disabled={isExporting}
                     onClick={() => downloadCustomExport("excel")} 
-                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1 }}
+                    className="admin-action-button"
+                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1, background: "rgba(38, 230, 173, 0.08)", borderColor: "rgba(38, 230, 173, 0.28)" }}
                   >
                     {isExporting && exportFormat === "excel" ? "Exporting..." : "Download Excel (.xls)"}
                   </button>
@@ -2229,12 +2566,13 @@ const AdminDashboard = () => {
                 {feedback ? <div style={{ marginTop: "16px", color: "#d9b7ff" }}>{feedback}</div> : null}
               </section>
 
-              <section style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "760px" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
                 <h2 style={{ margin: 0, fontSize: "19px" }}>Recent Export History</h2>
                 <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
                 <div style={{ marginTop: "18px" }}>
                   {exportHistory.length > 0 ? (
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <div className="admin-scroll" style={{ overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "560px", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px" }}>
                           <th style={{ padding: "10px" }}>Time</th>
@@ -2254,8 +2592,9 @@ const AdminDashboard = () => {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   ) : (
-                    <div style={{ color: "#596078", textAlign: "center", padding: "20px" }}>No recent history</div>
+                    <div className="admin-empty-state">No recent export history</div>
                   )}
                 </div>
               </section>
@@ -2264,14 +2603,14 @@ const AdminDashboard = () => {
             </>
           ) : (
             <>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+          <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
             <div>
               <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Admin Dashboard</h1>
               <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
                 {formatDate(new Date())} | All agents
               </div>
             </div>
-            <div style={{ display: "flex", gap: "12px" }}>
+            <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px" }}>
               <button type="button" onClick={loadResponses} style={ghostButton}>
                 Filter
               </button>
@@ -2281,7 +2620,7 @@ const AdminDashboard = () => {
             </div>
           </div>
 
-          <section style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "16px" }}>
+          <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "16px" }}>
             {[
               ["TOTAL CALLS TODAY", analytics.totalCalls, "created_at::date = CURRENT_DATE", "#a855f7"],
               ["CONNECTED", analytics.connectedCalls, `${analytics.connectRate}% connect rate`, "#27d8ff"],
@@ -2306,7 +2645,7 @@ const AdminDashboard = () => {
             ))}
           </section>
 
-          <section style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
+          <section className="admin-two-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
             <article style={{ ...panel, padding: "28px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h2 style={{ margin: 0, fontSize: "19px" }}>Call status breakdown</h2>
@@ -2347,7 +2686,7 @@ const AdminDashboard = () => {
             </article>
           </section>
 
-          <section style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
+          <section className="admin-two-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
             <article style={{ ...panel, padding: "28px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h2 style={{ margin: 0, fontSize: "19px" }}>Hourly call volume</h2>
@@ -2433,7 +2772,7 @@ const AdminDashboard = () => {
             </article>
           </section>
 
-          <section style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "18px" }}>
+          <section className="admin-create-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: "18px" }}>
             <article style={{ ...panel, padding: "28px", overflow: "hidden" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h2 style={{ margin: 0, fontSize: "19px" }}>Recent responses</h2>
@@ -2517,6 +2856,51 @@ const AdminDashboard = () => {
           )}
         </main>
       </div>
+
+      {editingAgent ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "20px", background: "rgba(4, 3, 9, 0.72)" }}>
+          <form onSubmit={handleUpdateAgent} style={{ ...panel, width: "100%", maxWidth: "520px", padding: "26px", display: "grid", gap: "14px", boxShadow: "0 28px 80px rgba(0,0,0,0.45)" }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: "22px" }}>Edit agent</h2>
+              <div style={{ marginTop: "8px", color: "#8f98b7", fontSize: "14px" }}>{editingAgent.name}</div>
+            </div>
+            <input style={input} placeholder="Agent name" value={editAgentForm.name} onChange={(event) => setEditAgentForm((current) => ({ ...current, name: event.target.value }))} />
+            <input style={input} placeholder="Employee ID" value={editAgentForm.employeeId} onChange={(event) => setEditAgentForm((current) => ({ ...current, employeeId: event.target.value }))} />
+            <input style={input} type="password" placeholder="New password (optional)" value={editAgentForm.password} onChange={(event) => setEditAgentForm((current) => ({ ...current, password: event.target.value }))} />
+            <select className="admin-select" style={input} value={editAgentForm.role} onChange={(event) => setEditAgentForm((current) => ({ ...current, role: event.target.value }))}>
+              <option value="agent">agent</option>
+              <option value="admin">admin</option>
+            </select>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+              <button type="button" onClick={closeAgentModal} disabled={isAgentActionLoading} style={{ ...ghostButton, opacity: isAgentActionLoading ? 0.55 : 1 }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={isAgentActionLoading} style={{ ...ghostButton, background: "rgba(168, 85, 247, 0.22)", borderColor: "rgba(168, 85, 247, 0.48)", opacity: isAgentActionLoading ? 0.55 : 1 }}>
+                {isAgentActionLoading ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deletingAgent ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "20px", background: "rgba(4, 3, 9, 0.72)" }}>
+          <div style={{ ...panel, width: "100%", maxWidth: "470px", padding: "26px", boxShadow: "0 28px 80px rgba(0,0,0,0.45)" }}>
+            <h2 style={{ margin: 0, fontSize: "22px" }}>Delete agent?</h2>
+            <div style={{ marginTop: "12px", color: "#aeb5d4", lineHeight: 1.5 }}>
+              This will delete {deletingAgent.name}. This action needs confirmation.
+            </div>
+            <div style={{ marginTop: "22px", display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+              <button type="button" onClick={closeAgentModal} disabled={isAgentActionLoading} style={{ ...ghostButton, opacity: isAgentActionLoading ? 0.55 : 1 }}>
+                Cancel
+              </button>
+              <button type="button" onClick={handleDeleteAgent} disabled={isAgentActionLoading} style={{ ...ghostButton, color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)", background: "rgba(255, 118, 133, 0.1)", opacity: isAgentActionLoading ? 0.55 : 1 }}>
+                {isAgentActionLoading ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

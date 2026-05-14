@@ -1,7 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-const { query } = require("../config/db");
+const { query, withTransaction } = require("../config/db");
 
 const buildToken = (user, sessionId = null) =>
   jwt.sign(
@@ -421,6 +421,132 @@ const getAllAgents = async (req, res, next) => {
 
 const getAgentMonitoring = getAllAgents;
 
+const updateAgent = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const agentId = Number.parseInt(req.params.id, 10);
+    const { name, employeeId, password, role } = req.body;
+
+    if (!Number.isFinite(agentId)) {
+      return res.status(400).json({ success: false, message: "Valid agent id is required" });
+    }
+
+    if (!name?.trim() || !employeeId?.trim()) {
+      return res.status(400).json({ success: false, message: "Agent name and employee ID are required" });
+    }
+
+    const normalizedRole = role === "admin" ? "admin" : "agent";
+    const passwordValue = String(password || "").trim();
+
+    const updatedAgent = await withTransaction(async (client) => {
+      const currentResult = await client.query(
+        "SELECT id, employee_id FROM users WHERE id = $1 LIMIT 1",
+        [agentId]
+      );
+      const currentAgent = currentResult.rows[0];
+
+      if (!currentAgent) {
+        const error = new Error("Agent not found");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const duplicateResult = await client.query(
+        "SELECT id FROM users WHERE employee_id = $1 AND id <> $2 LIMIT 1",
+        [employeeId.trim(), agentId]
+      );
+
+      if (duplicateResult.rows[0]) {
+        const error = new Error("Employee ID already exists");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      let hashedPassword = null;
+
+      if (passwordValue) {
+        hashedPassword = await bcrypt.hash(passwordValue, 10);
+      }
+
+      const result = await client.query(
+        `UPDATE users
+         SET
+           name = $1,
+           employee_id = $2,
+           role = $3,
+           password = COALESCE($4, password),
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = $5
+         RETURNING id, name, employee_id, zoho_id, role, status, created_at`,
+        [name.trim(), employeeId.trim(), normalizedRole, hashedPassword, agentId]
+      );
+
+      await client.query(
+        `UPDATE responses
+         SET employee_id = $1, employee_name = $2
+         WHERE employee_id = $3`,
+        [employeeId.trim(), name.trim(), currentAgent.employee_id]
+      );
+
+      return result.rows[0];
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Agent updated successfully",
+      data: updatedAgent,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteAgent = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const agentId = Number.parseInt(req.params.id, 10);
+
+    if (!Number.isFinite(agentId)) {
+      return res.status(400).json({ success: false, message: "Valid agent id is required" });
+    }
+
+    if (agentId === req.user.id) {
+      return res.status(400).json({ success: false, message: "You cannot delete your own account" });
+    }
+
+    const deletedAgent = await withTransaction(async (client) => {
+      const result = await client.query(
+        `DELETE FROM users
+         WHERE id = $1 AND role = 'agent'
+         RETURNING id, name, employee_id`,
+        [agentId]
+      );
+
+      if (!result.rows[0]) {
+        const error = new Error("Agent not found");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      return result.rows[0];
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Agent deleted successfully",
+      data: deletedAgent,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
   register,
@@ -428,4 +554,6 @@ module.exports = {
   updateStatus,
   getAllAgents,
   getAgentMonitoring,
+  updateAgent,
+  deleteAgent,
 };

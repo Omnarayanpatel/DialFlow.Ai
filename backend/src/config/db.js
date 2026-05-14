@@ -23,6 +23,22 @@ const query = async (text, params = []) => {
   return client.query(text, params);
 };
 
+const withTransaction = async (callback) => {
+  const client = await getPool().connect();
+
+  try {
+    await client.query("BEGIN");
+    const result = await callback(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const runSchema = async () => {
   const schemaPath = path.resolve(__dirname, "../../../database/schema.sql");
   const schemaSql = fs.readFileSync(schemaPath, "utf8");
@@ -44,4 +60,5 @@ const connectDB = async () => {
 module.exports = {
   connectDB,
   query,
+  withTransaction,
 };

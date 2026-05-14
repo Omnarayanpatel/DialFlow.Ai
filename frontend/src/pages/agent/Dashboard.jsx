@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import AgentRanking from "../../components/ranking/AgentRanking";
 import { updateUserStatus } from "../../services/authService";
 import { createAgentResponse, getAgentDashboardData } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
 
 const sidebarMenu = [
   { id: "dashboard", label: "Dashboard", icon: "grid" },
+  { id: "ranking", label: "Ranking", icon: "chart" },
   { id: "history", label: "My history", icon: "history" },
   { id: "profile", label: "My profile", icon: "profile" },
 ];
@@ -210,11 +212,30 @@ const iconFor = (type) => {
     );
   }
 
+  if (type === "chart") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M4 18L9 13L13 15L20 7" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M4 20H20" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
   if (type === "profile") {
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
         <circle cx="12" cy="8" r="4" stroke="#b585ff" strokeWidth="2" />
         <path d="M5 19C6.8 15.8 9 14.5 12 14.5C15 14.5 17.2 15.8 19 19" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (type === "logout") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M10 5H6.5C5.7 5 5 5.7 5 6.5V17.5C5 18.3 5.7 19 6.5 19H10" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" />
+        <path d="M14 8L18 12L14 16" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M18 12H9" stroke="#b585ff" strokeWidth="2" strokeLinecap="round" />
       </svg>
     );
   }
@@ -311,6 +332,10 @@ const Dashboard = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    document.title = "Agent Dashboard | Dialflow.ai";
+  }, []);
 
   const showDisposition = true;
   const subDispositionOptions = useMemo(
@@ -683,9 +708,9 @@ const Dashboard = () => {
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: "22px", fontWeight: 500 }}>CallCenter AI</div>
+                <div style={{ fontSize: "22px", fontWeight: 500 }}>Dialflow.ai</div>
                 <div style={{ marginTop: "6px", fontSize: "15px", color: "#a69ec3" }}>
-                  Agent Portal v2.0
+                  Powered by Dhritii.ai
                 </div>
               </div>
             </div>
@@ -796,15 +821,18 @@ const Dashboard = () => {
 
           <div 
             onClick={handleLogout}
-            style={{ marginTop: "auto", padding: "28px 34px 30px", color: "#8b83aa", fontSize: "18px", cursor: "pointer" }}
+            style={{ marginTop: "auto", padding: "28px 34px 30px", color: "#8b83aa", fontSize: "18px", cursor: "pointer", display: "flex", alignItems: "center", gap: "12px" }}
             className="logout-btn"
           >
+            {iconFor("logout")}
             Logout
           </div>
         </aside>
 
         <main className="agent-main" style={{ padding: "34px 40px 34px" }}>
-          {activeView === "history" ? (
+          {activeView === "ranking" ? (
+            <AgentRanking token={token} employeeId={user.employeeId} />
+          ) : activeView === "history" ? (
             <section style={{ ...panel, padding: "30px 34px" }}>
               <div
                 style={{

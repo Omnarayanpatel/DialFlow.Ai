@@ -4,6 +4,10 @@ import { useNavigate } from "react-router-dom";
 const LandingPage = () => {
   const navigate = useNavigate();
 
+  useEffect(() => {
+    document.title = "Dialflow.ai | Powered by Dhritii.ai";
+  }, []);
+
   // State for live timers (Rahul, Priya, Sneha, Arjun)
   const [timers, setTimers] = useState([
     3 * 3600 + 24 * 60 + 15, // 03:24:15
@@ -134,7 +138,7 @@ const LandingPage = () => {
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.8 19.8 0 0 1-3.07-8.67A2 2 0 0 1 3.62 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 5.5 5.5l.96-1.87a2 2 0 0 1 2.11-.45 12.8 12.8 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
               </svg>
             </div>
-            DialFlow AI
+            Dialflow.ai
           </div>
           <ul style={{ display: 'flex', alignItems: 'center', gap: '2rem', listStyle: 'none' }}>
             {['Features', 'How it works', 'Monitoring'].map(l => (
@@ -160,7 +164,7 @@ const LandingPage = () => {
             Smart Call Tracking.<br /><span className="gradient-text">Better Performance.</span>
           </h1>
           <p style={{ fontSize: '1.15rem', color: '#9380b4', maxWidth: '560px', margin: '1.5rem auto 2.5rem', fontWeight: 300, lineHeight: 1.7, animation: 'fadeUp 0.8s 0.2s ease both' }}>
-            DialFlow AI helps call center agents log responses faster and enables admins to track performance in real-time.
+            Dialflow.ai helps call center agents log responses faster and enables admins to track performance in real-time.
           </p>
           <div style={{ display: 'flex', gap: '14px', justifyContent: 'center', flexWrap: 'wrap', animation: 'fadeUp 0.8s 0.3s ease both' }}>
             <button onClick={() => navigate("/register")} className="btn-primary" style={{ padding: '14px 32px', borderRadius: '12px', fontSize: '1rem', boxShadow: '0 0 40px rgba(168,85,247,0.4)', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
@@ -189,13 +193,13 @@ const LandingPage = () => {
             <div style={{ background: 'rgba(255,255,255,0.03)', border: '0.5px solid rgba(139,92,246,0.25)', borderRadius: '20px', padding: '20px', backdropFilter: 'blur(20px)', boxShadow: '0 40px 80px rgba(0,0,0,0.6)', overflow: 'hidden' }}>
                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', paddingBottom: '12px', borderBottom: '0.5px solid rgba(139,92,246,0.15)' }}>
                  {['#ff5f57', '#febc2e', '#28c840'].map(c => <div key={c} style={{ width: '10px', height: '10px', borderRadius: '50%', background: c }} />)}
-                 <div style={{ fontSize: '11px', color: '#4a3d6e', marginLeft: '8px', fontFamily: 'Syne' }}>DialFlow AI — Admin Dashboard</div>
+                 <div style={{ fontSize: '11px', color: '#4a3d6e', marginLeft: '8px', fontFamily: 'Syne' }}>Dialflow.ai - Admin Dashboard</div>
                </div>
                <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: '12px', height: '320px', textAlign: 'left' }}>
                   <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '10px', padding: '12px', border: '0.5px solid rgba(139,92,246,0.1)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontFamily: 'Syne', fontSize: '11px', fontWeight: 700, color: '#f0eaff', marginBottom: '12px', paddingBottom: '10px', borderBottom: '0.5px solid rgba(139,92,246,0.1)' }}>
                       <div style={{ width: '20px', height: '20px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', borderRadius: '5px' }} />
-                      DialFlow
+                      Dialflow.ai
                     </div>
                     {['Overview', 'Analytics', 'Responses', 'Agents', 'Reports', 'Export'].map((n, i) => (
                       <div key={n} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 8px', borderRadius: '6px', fontSize: '10px', color: i === 0 ? '#c084fc' : 'rgba(147,128,180,0.7)', background: i === 0 ? 'rgba(168,85,247,0.12)' : 'transparent' }}>
@@ -275,7 +279,7 @@ const LandingPage = () => {
         <section id="howitworks" style={{ padding: '6rem 6%', background: 'linear-gradient(180deg, transparent, rgba(139,92,246,0.04) 50%, transparent)' }}>
            <div style={{ textAlign: 'center' }}>
              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#c084fc', marginBottom: '1rem' }}>Workflow</div>
-             <h2 className="reveal" style={{ fontFamily: 'Syne', fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 800, lineHeight: 1.1 }}>How DialFlow works<br /><span className="gradient-text">in 4 simple steps.</span></h2>
+             <h2 className="reveal" style={{ fontFamily: 'Syne', fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 800, lineHeight: 1.1 }}>How Dialflow.ai works<br /><span className="gradient-text">in 4 simple steps.</span></h2>
            </div>
            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0', marginTop: '3.5rem', position: 'relative' }}>
               <div style={{ position: 'absolute', top: '36px', left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.3), rgba(34,211,238,0.3), transparent)', zIndex: 0 }} />
@@ -381,7 +385,7 @@ const LandingPage = () => {
               <h2 style={{ fontFamily: 'Syne', fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 800, letterSpacing: '-0.03em', marginBottom: '1rem' }}>
                 Ready to transform your<br /><span className="gradient-text">call center operations?</span>
               </h2>
-              <p style={{ fontSize: '1.05rem', color: '#9380b4', marginBottom: '2.5rem', fontWeight: 300 }}>Join hundreds of agents already using DialFlow AI to log smarter and perform better.</p>
+              <p style={{ fontSize: '1.05rem', color: '#9380b4', marginBottom: '2.5rem', fontWeight: 300 }}>Join hundreds of agents already using Dialflow.ai to log smarter and perform better.</p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
                  <button onClick={() => navigate("/register")} className="btn-primary" style={{ padding: '14px 32px', borderRadius: '12px', fontSize: '1rem', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M8 4l4 4-4 4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/></svg>
@@ -399,9 +403,9 @@ const LandingPage = () => {
                   <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.8 19.8 0 0 1-3.07-8.67A2 2 0 0 1 3.62 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 5.5 5.5l.96-1.87a2 2 0 0 1 2.11-.45 12.8 12.8 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
                 </svg>
               </div>
-              DialFlow AI
+              Dialflow.ai
            </a>
-           <div style={{ fontSize: '0.8rem', color: '#4a3d6e' }}>© 2026 DialFlow AI &nbsp;·&nbsp; Powered by <a href="http://Dhritii.ai" target="_blank" rel="noreferrer" style={{ color: '#c084fc', textDecoration: 'none' }}>Dhritii.ai</a></div>
+           <div style={{ fontSize: '0.8rem', color: '#4a3d6e' }}>© 2026 Dialflow.ai &nbsp;·&nbsp; Powered by <a href="http://Dhritii.ai" target="_blank" rel="noreferrer" style={{ color: '#c084fc', textDecoration: 'none' }}>Dhritii.ai</a></div>
            <div style={{ display: 'flex', gap: '1.5rem' }}>
               {['Privacy', 'Terms', 'Support'].map(l => <a key={l} href="#" style={{ fontSize: '0.8rem', color: '#4a3d6e', textDecoration: 'none' }}>{l}</a>)}
            </div>

@@ -3,6 +3,7 @@ const cors = require("cors");
 
 const authRoutes = require("./routes/auth.routes");
 const agentRoutes = require("./routes/agent.routes");
+const rankingRoutes = require("./routes/ranking.routes");
 const responseRoutes = require("./routes/response.routes");
 const errorMiddleware = require("./middlewares/error.middleware");
 
@@ -26,6 +27,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/agents", agentRoutes);
+app.use("/api/rankings", rankingRoutes);
 app.use("/api/responses", responseRoutes);
 
 app.use((_req, res) => {

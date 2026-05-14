@@ -44,6 +44,25 @@ export const getAgentMonitoring = async (token) => {
   return response.data;
 };
 
+export const updateAgent = async (id, payload, token) => {
+  const response = await apiRequest(`/agents/${id}`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(payload),
+  });
+
+  return response.data;
+};
+
+export const deleteAgent = async (id, token) => {
+  const response = await apiRequest(`/agents/${id}`, {
+    method: "DELETE",
+    token,
+  });
+
+  return response.data;
+};
+
 export const persistSession = ({ token, user }) => {
   localStorage.setItem("token", token);
   localStorage.setItem("user", JSON.stringify(user));

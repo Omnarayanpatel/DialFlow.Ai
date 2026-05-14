@@ -86,6 +86,9 @@ CREATE INDEX IF NOT EXISTS idx_responses_created_date
 CREATE INDEX IF NOT EXISTS idx_responses_created_date_agent
   ON responses ((created_at::date), employee_id);
 
+CREATE INDEX IF NOT EXISTS idx_responses_created_at_agent
+  ON responses (created_at DESC, employee_id);
+
 CREATE INDEX IF NOT EXISTS idx_responses_status_disposition_created_at
   ON responses (call_status, disposition, created_at DESC);
 

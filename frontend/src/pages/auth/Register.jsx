@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { persistSession, registerUser } from "../../services/authService";
@@ -38,6 +38,10 @@ const Register = ({ onAuthSuccess }) => {
   });
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    document.title = "Create Account | Dialflow.ai";
+  }, []);
 
   const handleChange = (key, value) => {
     setForm((current) => ({
@@ -121,9 +125,13 @@ const Register = ({ onAuthSuccess }) => {
           position: "relative",
         }}
       >
+        <div style={{ textAlign: "center", marginBottom: "22px" }}>
+          <div style={{ fontSize: "30px", fontWeight: 700 }}>Dialflow.ai</div>
+          <div style={{ marginTop: "6px", color: "#c5a8ff", fontSize: "14px" }}>Powered by Dhritii.ai</div>
+        </div>
         <h2 style={{ margin: 0, textAlign: "center", fontSize: "32px" }}>Create Account</h2>
         <p style={{ textAlign: "center", color: "#aaa3c2", marginTop: "10px", marginBottom: "28px" }}>
-          AI Powered CRM Access
+          Secure workspace access
         </p>
 
         <div style={{ display: "grid", gap: "14px" }}>
