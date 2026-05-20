@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import LogoutConfirmationModal from "../../components/common/LogoutConfirmationModal";
+import ThemeToggle from "../../components/common/ThemeToggle";
 import AgentRanking from "../../components/ranking/AgentRanking";
 import { updateUserStatus } from "../../services/authService";
 import { createAgentResponse, getAgentDashboardData } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
+import { useTheme } from "../../theme/useTheme";
 
 const sidebarMenu = [
   { id: "dashboard", label: "Dashboard", icon: "grid" },
@@ -274,6 +277,7 @@ const lockIcon = (
 
 const Dashboard = () => {
   const { user, token } = useStore();
+  const { theme, toggleTheme } = useTheme();
   const agentSessionId = useMemo(() => getAgentSessionId(user), [user.employeeId, user.id, user.email, user.name]);
   const loginTimeStorageKey = `agentLoginTime:${agentSessionId}`;
   const workDurationStorageKey = `agentWorkDuration:${agentSessionId}`;
@@ -304,11 +308,11 @@ const Dashboard = () => {
   });
 
   const [referenceId, setReferenceId] = useState("");
-  const [callStatus, setCallStatus] = useState("Connected");
+  const [callStatus, setCallStatus] = useState("Not Connected");
   const [callStatusOther, setCallStatusOther] = useState("");
   const [language, setLanguage] = useState("NA");
   const [languageOther, setLanguageOther] = useState("");
-  const [disposition, setDisposition] = useState("Positive");
+  const [disposition, setDisposition] = useState("RNR");
   const [dispositionOther, setDispositionOther] = useState("");
   const [subDisposition, setSubDisposition] = useState("NA");
   const [subDispositionOther, setSubDispositionOther] = useState("");
@@ -332,6 +336,8 @@ const Dashboard = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   useEffect(() => {
     document.title = "Agent Dashboard | Dialflow.ai";
@@ -432,11 +438,11 @@ const Dashboard = () => {
 
   const resetForm = () => {
     setReferenceId("");
-    setCallStatus("Connected");
+    setCallStatus("Not Connected");
     setCallStatusOther("");
     setLanguage("NA");
     setLanguageOther("");
-    setDisposition("Positive");
+    setDisposition("RNR");
     setDispositionOther("");
     setSubDisposition("NA");
     setSubDispositionOther("");
@@ -452,6 +458,7 @@ const Dashboard = () => {
   };
 
   const handleLogout = async () => {
+    setIsLoggingOut(true);
     await syncStatus("Offline");
     sessionStorage.removeItem(loginTimeStorageKey);
     sessionStorage.removeItem(workDurationStorageKey);
@@ -459,6 +466,18 @@ const Dashboard = () => {
     sessionStorage.removeItem("agentWorkDuration");
     localStorage.clear();
     window.location.reload();
+  };
+
+  const openLogoutConfirmation = () => {
+    setIsLogoutConfirmationOpen(true);
+  };
+
+  const closeLogoutConfirmation = () => {
+    if (isLoggingOut) {
+      return;
+    }
+
+    setIsLogoutConfirmationOpen(false);
   };
 
   const effectiveCallStatus = showOtherCallStatus ? callStatusOther || "Other" : callStatus;
@@ -581,7 +600,7 @@ const Dashboard = () => {
   });
 
   return (
-    <div style={shell}>
+    <div className="crm-theme-root" data-theme={theme} style={shell}>
       <style>
         {`
           @keyframes spinStar {
@@ -690,29 +709,33 @@ const Dashboard = () => {
           }}
         >
           <div style={{ padding: "36px 34px 30px", borderBottom: "1px solid rgba(114, 74, 246, 0.2)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-              <div
-                style={{
-                  width: "44px",
-                  height: "44px",
-                  borderRadius: "12px",
-                  background: "rgba(122, 73, 255, 0.16)",
-                  border: "1px solid rgba(166, 108, 255, 0.34)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <div style={{ animation: "spinStar 10s linear infinite", display: "inline-flex" }}>
-                  {aiStar}
+            <div style={{ display: "flex", alignItems: "center", gap: "14px", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", minWidth: 0 }}>
+                <div
+                  style={{
+                    width: "44px",
+                    height: "44px",
+                    borderRadius: "12px",
+                    background: "rgba(122, 73, 255, 0.16)",
+                    border: "1px solid rgba(166, 108, 255, 0.34)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div style={{ animation: "spinStar 10s linear infinite", display: "inline-flex" }}>
+                    {aiStar}
+                  </div>
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: "22px", fontWeight: 500 }}>Dialflow.ai</div>
+                  <div style={{ marginTop: "6px", fontSize: "15px", color: "#a69ec3" }}>
+                    Powered by Dhritii.ai
+                  </div>
                 </div>
               </div>
-              <div>
-                <div style={{ fontSize: "22px", fontWeight: 500 }}>Dialflow.ai</div>
-                <div style={{ marginTop: "6px", fontSize: "15px", color: "#a69ec3" }}>
-                  Powered by Dhritii.ai
-                </div>
-              </div>
+              <ThemeToggle theme={theme} onToggle={toggleTheme} />
             </div>
           </div>
 
@@ -800,6 +823,7 @@ const Dashboard = () => {
             {sidebarMenu.map((item) => (
               <div
                 key={item.label}
+                className={activeView === item.id ? "crm-nav-item is-active" : "crm-nav-item"}
                 onClick={() => setActiveView(item.id)}
                 style={{
                   display: "flex",
@@ -820,7 +844,7 @@ const Dashboard = () => {
           </nav>
 
           <div 
-            onClick={handleLogout}
+            onClick={openLogoutConfirmation}
             style={{ marginTop: "auto", padding: "28px 34px 30px", color: "#8b83aa", fontSize: "18px", cursor: "pointer", display: "flex", alignItems: "center", gap: "12px" }}
             className="logout-btn"
           >
@@ -1269,7 +1293,6 @@ const Dashboard = () => {
                   value={callStatus}
                   onChange={(event) => {
                     setCallStatus(event.target.value);
-                    setDisposition("Positive");
                     setSubDisposition("NA");
                   }}
                 >
@@ -1425,21 +1448,7 @@ const Dashboard = () => {
                 flexWrap: "wrap",
               }}
             >
-              <button
-                type="button"
-                onClick={resetForm}
-                style={{
-                  padding: "16px 28px",
-                  borderRadius: "16px",
-                  border: "1px solid rgba(158, 149, 184, 0.34)",
-                  background: "transparent",
-                  color: "#f5f1ff",
-                  fontSize: "18px",
-                  cursor: "pointer",
-                }}
-              >
-                Clear form
-              </button>
+             
               <button
                 type="button"
                 onClick={handleSubmit}
@@ -1545,6 +1554,10 @@ const Dashboard = () => {
           )}
         </main>
       </div>
+
+      {isLogoutConfirmationOpen ? (
+        <LogoutConfirmationModal onCancel={closeLogoutConfirmation} onConfirm={handleLogout} isLoggingOut={isLoggingOut} />
+      ) : null}
     </div>
   );
 };

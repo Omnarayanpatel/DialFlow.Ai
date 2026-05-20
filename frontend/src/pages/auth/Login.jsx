@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ThemeToggle from "../../components/common/ThemeToggle";
 import { loginUser, persistSession } from "../../services/authService";
+import { useTheme } from "../../theme/useTheme";
 
 const shellStyle = {
   minHeight: "100vh",
@@ -26,12 +28,63 @@ const inputStyle = {
   fontSize: "15px",
 };
 
+const passwordInputStyle = {
+  ...inputStyle,
+  paddingRight: "52px",
+};
+
+const passwordToggleStyle = {
+  position: "absolute",
+  top: "50%",
+  right: "14px",
+  transform: "translateY(-50%)",
+  width: "34px",
+  height: "34px",
+  border: 0,
+  borderRadius: "10px",
+  background: "transparent",
+  color: "#c5a8ff",
+  cursor: "pointer",
+  display: "grid",
+  placeItems: "center",
+  padding: 0,
+};
+
+const visibilityIconProps = {
+  width: 20,
+  height: 20,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+};
+
+const EyeIcon = () => (
+  <svg {...visibilityIconProps} aria-hidden="true">
+    <path d="M2.5 12S5.8 5.5 12 5.5S21.5 12 21.5 12 18.2 18.5 12 18.5 2.5 12 2.5 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg {...visibilityIconProps} aria-hidden="true">
+    <path d="M3 3L21 21" />
+    <path d="M10.6 5.7C11.1 5.6 11.5 5.5 12 5.5C18.2 5.5 21.5 12 21.5 12C20.6 13.7 19.4 15.2 18 16.3" />
+    <path d="M14.1 14.1C13.6 14.7 12.8 15 12 15C10.3 15 9 13.7 9 12C9 11.2 9.3 10.4 9.9 9.9" />
+    <path d="M6.4 6.9C4 8.6 2.5 12 2.5 12S5.8 18.5 12 18.5C13.3 18.5 14.5 18.2 15.6 17.8" />
+  </svg>
+);
+
 const Login = ({ onAuthSuccess }) => {
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const [form, setForm] = useState({
     employeeId: "",
     password: "",
   });
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -76,7 +129,12 @@ const Login = ({ onAuthSuccess }) => {
   };
 
   return (
-    <div style={shellStyle}>
+    <div className="crm-theme-root" data-theme={theme} style={shellStyle}>
+      <ThemeToggle
+        theme={theme}
+        onToggle={toggleTheme}
+        style={{ position: "fixed", top: "20px", right: "20px", zIndex: 3 }}
+      />
       <div
         style={{
           position: "fixed",
@@ -133,13 +191,26 @@ const Login = ({ onAuthSuccess }) => {
             value={form.employeeId}
             onChange={(event) => handleChange("employeeId", event.target.value)}
           />
-          <input
-            style={inputStyle}
-            type="password"
-            placeholder="Password"
-            value={form.password}
-            onChange={(event) => handleChange("password", event.target.value)}
-          />
+          <div style={{ position: "relative" }}>
+            <input
+              style={passwordInputStyle}
+              type={isPasswordVisible ? "text" : "password"}
+              placeholder="Password"
+              value={form.password}
+              onChange={(event) => handleChange("password", event.target.value)}
+              autoComplete="current-password"
+            />
+            <button
+              type="button"
+              onClick={() => setIsPasswordVisible((current) => !current)}
+              style={passwordToggleStyle}
+              aria-label={isPasswordVisible ? "Hide password" : "Show password"}
+              aria-pressed={isPasswordVisible}
+              title={isPasswordVisible ? "Hide password" : "Show password"}
+            >
+              {isPasswordVisible ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
         </div>
 
         {feedback ? (

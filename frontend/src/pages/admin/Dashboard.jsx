@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import LogoutConfirmationModal from "../../components/common/LogoutConfirmationModal";
+import ThemeToggle from "../../components/common/ThemeToggle";
 import AdminRanking from "../../components/ranking/AdminRanking";
 import { deleteAgent, getAgentMonitoring, registerUser, updateAgent } from "../../services/authService";
 import { downloadResponsesExport, getAllResponses } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
+import { useTheme } from "../../theme/useTheme";
 
 const shell = {
   minHeight: "100vh",
@@ -194,6 +197,7 @@ const formatDateTime = (value) => {
 
 const AdminDashboard = () => {
   const { token, user } = useStore();
+  const { theme, toggleTheme } = useTheme();
   const [activeView, setActiveView] = useState("overview");
   const [responses, setResponses] = useState([]);
   const [allAgents, setAllAgents] = useState([]);
@@ -224,6 +228,7 @@ const AdminDashboard = () => {
   const [agentViewMode, setAgentViewMode] = useState("grid");
   const [editingAgent, setEditingAgent] = useState(null);
   const [deletingAgent, setDeletingAgent] = useState(null);
+  const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [isAgentActionLoading, setIsAgentActionLoading] = useState(false);
   const [editAgentForm, setEditAgentForm] = useState({
     name: "",
@@ -295,7 +300,7 @@ const AdminDashboard = () => {
       activeAgents,
       agentsOnBreak,
       connectRate: totalCalls ? Math.round((connectedCalls / totalCalls) * 100) : 0,
-      conversionRate: totalCalls ? Math.round((positiveCalls / totalCalls) * 100) : 0,
+      conversionRate: connectedCalls ? Math.round((positiveCalls / connectedCalls) * 100) : 0,
     };
   }, [adminSummary]);
 
@@ -380,7 +385,7 @@ const AdminDashboard = () => {
         positive: stats.positive,
         initials,
         connectRate: stats.calls ? Math.round((stats.connected / stats.calls) * 100) : 0,
-        conversionRate: stats.calls ? Math.round((stats.positive / stats.calls) * 100) : 0,
+        conversionRate: stats.connected ? Math.round((stats.positive / stats.connected) * 100) : 0,
         status: normalizeAgentStatus(agent.status),
         loginTime: agent.login_time || null,
         activeSessionDuration: agent.active_session_duration || 0,
@@ -487,7 +492,7 @@ const AdminDashboard = () => {
       positive,
       callback,
       connectRate: total ? Math.round((connected / total) * 100) : 0,
-      conversionRate: total ? Math.round((positive / total) * 100) : 0,
+      conversionRate: connected ? Math.round((positive / connected) * 100) : 0,
     };
   }, [reportRows]);
 
@@ -518,7 +523,7 @@ const AdminDashboard = () => {
       .map((agent) => ({
         ...agent,
         connectRate: agent.total ? Math.round((agent.connected / agent.total) * 100) : 0,
-        conversionRate: agent.total ? Math.round((agent.positive / agent.total) * 100) : 0,
+        conversionRate: agent.connected ? Math.round((agent.positive / agent.connected) * 100) : 0,
       }))
       .sort((a, b) => b.total - a.total);
   }, [reportRows]);
@@ -658,7 +663,7 @@ const AdminDashboard = () => {
       const interval = setInterval(() => {
         loadResponses();
         loadAgents();
-      }, 5000); // 5 सेकंड में रियल-टाइम अपडेट के लिए
+      }, 5000); 
 
       return () => clearInterval(interval);
     }
@@ -679,6 +684,14 @@ const AdminDashboard = () => {
     localStorage.clear();
     sessionStorage.clear();
     window.location.reload();
+  };
+
+  const openLogoutConfirmation = () => {
+    setIsLogoutConfirmationOpen(true);
+  };
+
+  const closeLogoutConfirmation = () => {
+    setIsLogoutConfirmationOpen(false);
   };
 
   const handleCreateAgent = async (event) => {
@@ -1034,7 +1047,7 @@ const AdminDashboard = () => {
   };
 
   return (
-    <div style={shell}>
+    <div className="crm-theme-root" data-theme={theme} style={shell}>
       <style>
         {`
           .admin-select option {
@@ -1261,24 +1274,28 @@ const AdminDashboard = () => {
           }}
         >
           <div style={{ padding: "28px", borderBottom: "1px solid rgba(122, 73, 255, 0.22)" }}>
-            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-              <div
-                style={{
-                  width: "36px",
-                  height: "36px",
-                  borderRadius: "8px",
-                  display: "grid",
-                  placeItems: "center",
-                  background: "rgba(145, 73, 255, 0.22)",
-                  border: "1px solid rgba(177, 107, 255, 0.52)",
-                }}
-              >
-                <span style={{ color: "#c88cff", fontSize: "22px" }}>*</span>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", gap: "12px", alignItems: "center", minWidth: 0 }}>
+                <div
+                  style={{
+                    width: "36px",
+                    height: "36px",
+                    borderRadius: "8px",
+                    display: "grid",
+                    placeItems: "center",
+                    background: "rgba(145, 73, 255, 0.22)",
+                    border: "1px solid rgba(177, 107, 255, 0.52)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <span style={{ color: "#c88cff", fontSize: "22px" }}>*</span>
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: "20px", fontWeight: 700 }}>Dialflow.ai</div>
+                  <div style={{ marginTop: "6px", color: "#a6a1bd", fontSize: "14px" }}>Powered by Dhritii.ai</div>
+                </div>
               </div>
-              <div>
-                <div style={{ fontSize: "20px", fontWeight: 700 }}>Dialflow.ai</div>
-                <div style={{ marginTop: "6px", color: "#a6a1bd", fontSize: "14px" }}>Powered by Dhritii.ai</div>
-              </div>
+              <ThemeToggle theme={theme} onToggle={toggleTheme} />
             </div>
           </div>
 
@@ -1333,6 +1350,7 @@ const AdminDashboard = () => {
               <button
                 type="button"
                 key={label}
+                className={activeView === id ? "crm-nav-item is-active" : "crm-nav-item"}
                 onClick={() => setActiveView(id)}
                 style={{
                   width: "100%",
@@ -1357,7 +1375,7 @@ const AdminDashboard = () => {
 
           <button
             type="button"
-            onClick={handleLogout}
+            onClick={openLogoutConfirmation}
             style={{
               marginTop: "auto",
               display: "flex",
@@ -2622,7 +2640,7 @@ const AdminDashboard = () => {
 
           <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: "16px" }}>
             {[
-              ["TOTAL CALLS TODAY", analytics.totalCalls, "created_at::date = CURRENT_DATE", "#a855f7"],
+              ["TOTAL CALLS TODAY", analytics.totalCalls, "", "#a855f7"],
               ["CONNECTED", analytics.connectedCalls, `${analytics.connectRate}% connect rate`, "#27d8ff"],
               ["POSITIVE / CONVERTED", analytics.positiveCalls, `${analytics.conversionRate}% conversion`, "#35e5a7"],
               ["NOT CONNECTED", analytics.notConnectedCalls, "Today only", "#ff717e"],
@@ -2900,6 +2918,10 @@ const AdminDashboard = () => {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {isLogoutConfirmationOpen ? (
+        <LogoutConfirmationModal onCancel={closeLogoutConfirmation} onConfirm={handleLogout} />
       ) : null}
     </div>
   );
