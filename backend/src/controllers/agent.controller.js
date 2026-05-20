@@ -59,9 +59,6 @@ const buildHistoryFilters = (req) => {
 
 const getAgentDashboard = async (req, res, next) => {
   try {
-    const loginTime = req.query.loginTime ? new Date(req.query.loginTime) : null;
-    const hasLoginTime = loginTime && !Number.isNaN(loginTime.getTime());
-
     const [statsResult, sessionResult, recentResult] = await Promise.all([
       query(
       `SELECT
@@ -75,11 +72,75 @@ const getAgentDashboard = async (req, res, next) => {
       [req.user.employeeId || ""]
       ),
       query(
-        `SELECT COUNT(*)::int AS calls_this_session
-         FROM responses
-         WHERE employee_id = $1
-           AND ($2::timestamp IS NULL OR created_at >= $2::timestamp)`,
-        [req.user.employeeId || "", hasLoginTime ? loginTime.toISOString() : null]
+        `WITH active_sessions AS (
+           SELECT *
+           FROM agent_sessions
+           WHERE user_id = $1 AND logout_time IS NULL
+         ),
+         active_metrics AS (
+           SELECT
+             MIN(login_time) AS login_time,
+             COALESCE(SUM(
+               GREATEST(
+                 EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - login_time))::int
+                   - total_break_duration
+                   - CASE
+                       WHEN break_start_time IS NOT NULL
+                         THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
+                       ELSE 0
+                     END,
+                 0
+               )
+             ), 0)::int AS active_session_duration,
+             COALESCE(SUM(
+               CASE
+                 WHEN break_start_time IS NOT NULL
+                   THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
+                 ELSE 0
+               END
+             ), 0)::int AS current_break_duration,
+             BOOL_OR(LOWER(status) = 'online') AS has_online_session,
+             BOOL_OR(LOWER(status) IN ('break', 'on break')) AS has_break_session,
+             COUNT(*)::int AS active_session_count
+           FROM active_sessions
+         ),
+         today_metrics AS (
+           SELECT
+             COALESCE(SUM(break_count), 0)::int AS break_count_today,
+             COALESCE(SUM(
+               total_break_duration + CASE
+                 WHEN logout_time IS NULL AND break_start_time IS NOT NULL
+                   THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
+                 ELSE 0
+               END
+             ), 0)::int AS total_break_duration_today
+           FROM agent_sessions
+           WHERE user_id = $1
+             AND login_time::date = CURRENT_DATE
+         )
+         SELECT
+           am.login_time,
+           COALESCE(am.active_session_duration, 0) AS active_session_duration,
+           COALESCE(tm.break_count_today, 0) AS break_count_today,
+           COALESCE(tm.total_break_duration_today, 0) AS total_break_duration_today,
+           COALESCE(am.current_break_duration, 0) AS current_break_duration,
+           COALESCE(am.active_session_count, 0) AS active_session_count,
+           CASE
+             WHEN COALESCE(am.has_online_session, false) THEN 'online'
+             WHEN COALESCE(am.has_break_session, false) THEN 'break'
+             ELSE 'offline'
+           END AS status,
+           CURRENT_TIMESTAMP AS server_time,
+           (
+             SELECT COUNT(*)::int
+             FROM responses
+             WHERE employee_id = $2
+               AND am.login_time IS NOT NULL
+               AND created_at >= am.login_time
+           ) AS calls_this_session
+         FROM active_metrics am
+         CROSS JOIN today_metrics tm`,
+        [req.user.id, req.user.employeeId || ""]
       ),
       query(
         `SELECT ${RESPONSE_SELECT}
@@ -111,7 +172,15 @@ const getAgentDashboard = async (req, res, next) => {
           positiveCalls: summary.positive_calls,
         },
         session: {
-          callsThisSession: session.calls_this_session,
+          callsThisSession: session.calls_this_session || 0,
+          loginTime: session.login_time,
+          activeSessionDuration: session.active_session_duration || 0,
+          breakCountToday: session.break_count_today || 0,
+          totalBreakDurationToday: session.total_break_duration_today || 0,
+          currentBreakDuration: session.current_break_duration || 0,
+          activeSessionCount: session.active_session_count || 0,
+          status: session.status || "offline",
+          serverTime: session.server_time,
         },
         recentToday: recentResult.rows,
       },

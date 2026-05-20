@@ -16,7 +16,7 @@ const toQueryString = (params = {}) => {
 
 export const getAgentDashboardData = async (token, params = {}) => {
   const [dashboard, history] = await Promise.all([
-    apiRequest(`/agents/dashboard${toQueryString({ loginTime: params.loginTime })}`, { method: "GET", token }),
+    apiRequest("/agents/dashboard", { method: "GET", token }),
     apiRequest(`/agents/history${toQueryString(params.history)}`, { method: "GET", token }),
   ]);
 

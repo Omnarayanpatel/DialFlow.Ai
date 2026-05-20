@@ -81,8 +81,18 @@ const fallbackSummary = {
 
 const fallbackRows = [];
 
-const getAgentSessionId = (user) =>
-  String(user.employeeId || user.id || user.email || user.name || "agent");
+const fallbackSession = {
+  callsThisSession: 0,
+  loginTime: null,
+  activeSessionDuration: 0,
+  breakCountToday: 0,
+  totalBreakDurationToday: 0,
+  currentBreakDuration: 0,
+  activeSessionCount: 0,
+  status: "offline",
+  serverTime: null,
+  syncedAt: 0,
+};
 
 const shell = {
   minHeight: "100vh",
@@ -155,18 +165,32 @@ const formatDateTime = (date) =>
   }).format(date);
 
 const formatDuration = (seconds) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  const safeSeconds = Math.max(Number.parseInt(seconds, 10) || 0, 0);
+  const h = Math.floor(safeSeconds / 3600);
+  const m = Math.floor((safeSeconds % 3600) / 60);
+  const s = safeSeconds % 60;
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 };
 
-const formatTime = (date) =>
+const formatTime = (date) => {
+  if (!date) {
+    return "NA";
+  }
+
+  const parsed = date instanceof Date ? date : new Date(date);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "NA";
+  }
+
+  return (
   new Intl.DateTimeFormat("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
-  }).format(date);
+  }).format(parsed)
+  );
+};
 
 const toDateInputValue = (date) => {
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -278,22 +302,10 @@ const lockIcon = (
 const Dashboard = () => {
   const { user, token } = useStore();
   const { theme, toggleTheme } = useTheme();
-  const agentSessionId = useMemo(() => getAgentSessionId(user), [user.employeeId, user.id, user.email, user.name]);
-  const loginTimeStorageKey = `agentLoginTime:${agentSessionId}`;
-  const workDurationStorageKey = `agentWorkDuration:${agentSessionId}`;
   const [activeView, setActiveView] = useState("dashboard");
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [loginTime] = useState(() => {
-    const storedLoginTime = sessionStorage.getItem(loginTimeStorageKey);
-
-    if (storedLoginTime) {
-      return new Date(storedLoginTime);
-    }
-
-    const now = new Date();
-    sessionStorage.setItem(loginTimeStorageKey, now.toISOString());
-    return now;
-  });
+  const [liveSeconds, setLiveSeconds] = useState(0);
+  const [dashboardSyncKey, setDashboardSyncKey] = useState(0);
 
   // Session-based Agent Info state (to be filled once upon login)
   const [empId, setEmpId] = useState(user.employeeId || "");
@@ -302,10 +314,6 @@ const Dashboard = () => {
   const [dialerId, setDialerId] = useState(user.dialerId || "");
   const [isInfoLocked, setIsInfoLocked] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [workDuration, setWorkDuration] = useState(() => {
-    const saved = sessionStorage.getItem(workDurationStorageKey);
-    return saved ? parseInt(saved, 10) : 0;
-  });
 
   const [referenceId, setReferenceId] = useState("");
   const [callStatus, setCallStatus] = useState("Not Connected");
@@ -318,7 +326,7 @@ const Dashboard = () => {
   const [subDispositionOther, setSubDispositionOther] = useState("");
   const [notes, setNotes] = useState("");
   const [summary, setSummary] = useState(fallbackSummary);
-  const [sessionStats, setSessionStats] = useState({ callsThisSession: 0 });
+  const [sessionStats, setSessionStats] = useState(fallbackSession);
   const [rows, setRows] = useState(fallbackRows);
   const [historyRecords, setHistoryRecords] = useState([]);
   const [historyPagination, setHistoryPagination] = useState({
@@ -357,19 +365,23 @@ const Dashboard = () => {
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       setCurrentTime(new Date());
-      if (!isPaused) {
-        setWorkDuration((prev) => {
-          const next = prev + 1;
-          sessionStorage.setItem(workDurationStorageKey, next.toString());
-          return next;
-        });
-      }
+      setLiveSeconds(Math.floor(performance.now() / 1000));
     }, 1000);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isPaused, workDurationStorageKey]);
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setDashboardSyncKey((current) => current + 1);
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -382,7 +394,6 @@ const Dashboard = () => {
       try {
         setHistoryLoading(true);
         const data = await getAgentDashboardData(token, {
-          loginTime: loginTime.toISOString(),
           history: {
             page: historyPagination.page,
             pageSize: historyPagination.pageSize,
@@ -405,13 +416,19 @@ const Dashboard = () => {
         setHistoryPagination((current) => ({ ...current, ...(data.pagination || {}) }));
         setRows(normalizeRecords(data.recentToday || []));
         setSummary(data.summary || fallbackSummary);
-        setSessionStats(data.session || { callsThisSession: 0 });
+        const nextSession = {
+          ...fallbackSession,
+          ...(data.session || {}),
+          syncedAt: performance.now(),
+        };
+        setSessionStats(nextSession);
+        setIsPaused(nextSession.status === "break");
       } catch (_error) {
         if (!ignore) {
           setRows(fallbackRows);
           setHistoryRecords([]);
           setSummary(fallbackSummary);
-          setSessionStats({ callsThisSession: 0 });
+          setSessionStats(fallbackSession);
         }
       } finally {
         if (!ignore) {
@@ -427,7 +444,7 @@ const Dashboard = () => {
     };
   }, [
     token,
-    loginTime,
+    dashboardSyncKey,
     historyPagination.page,
     historyPagination.pageSize,
     historyFilters.date,
@@ -460,8 +477,6 @@ const Dashboard = () => {
   const handleLogout = async () => {
     setIsLoggingOut(true);
     await syncStatus("Offline");
-    sessionStorage.removeItem(loginTimeStorageKey);
-    sessionStorage.removeItem(workDurationStorageKey);
     sessionStorage.removeItem("agentLoginTime");
     sessionStorage.removeItem("agentWorkDuration");
     localStorage.clear();
@@ -483,11 +498,28 @@ const Dashboard = () => {
   const effectiveCallStatus = showOtherCallStatus ? callStatusOther || "Other" : callStatus;
   const effectiveDisposition = showOtherDisposition ? dispositionOther || "Other" : disposition;
   const effectiveSubDisposition = showOtherSubDisposition ? subDispositionOther || "Other" : subDisposition;
+  const secondsSinceSessionSync = sessionStats.syncedAt
+    ? Math.max(liveSeconds - Math.floor(sessionStats.syncedAt / 1000), 0)
+    : 0;
+  const liveSessionDuration =
+    sessionStats.status === "online"
+      ? sessionStats.activeSessionDuration + secondsSinceSessionSync
+      : sessionStats.activeSessionDuration;
+  const liveCurrentBreakDuration =
+    sessionStats.status === "break"
+      ? sessionStats.currentBreakDuration + secondsSinceSessionSync
+      : 0;
+  const liveTotalBreakDurationToday =
+    sessionStats.status === "break"
+      ? sessionStats.totalBreakDurationToday + secondsSinceSessionSync
+      : sessionStats.totalBreakDurationToday;
+  const sessionLoginTime = sessionStats.loginTime ? new Date(sessionStats.loginTime) : null;
 
-  const handleTogglePause = () => {
+  const handleTogglePause = async () => {
     const nextState = !isPaused;
     setIsPaused(nextState);
-    syncStatus(nextState ? "On break" : "Online");
+    await syncStatus(nextState ? "On break" : "Online");
+    setDashboardSyncKey((current) => current + 1);
   };
 
   const handleSubmit = async () => {
@@ -568,7 +600,7 @@ const Dashboard = () => {
             ? current.positiveCalls + 1
             : current.positiveCalls,
       }));
-      setSessionStats((current) => ({ callsThisSession: current.callsThisSession + 1 }));
+      setSessionStats((current) => ({ ...current, callsThisSession: current.callsThisSession + 1 }));
 
       setFeedback("Response submitted successfully.");
       if (created.zoho_id || created.dialer_id) {
@@ -1139,7 +1171,7 @@ const Dashboard = () => {
                 fontSize: "16px",
               }}
             >
-              Login: {formatTime(loginTime)} | Work Time: {formatDuration(workDuration)}
+              Login: {formatTime(sessionLoginTime)} | Work Time: {formatDuration(liveSessionDuration)}
             </div>
           </div>
 
@@ -1167,13 +1199,16 @@ const Dashboard = () => {
                 accent: "#54ebb2",
               },
               { title: "CALLS THIS SESSION", value: sessionStats.callsThisSession, note: "Since login", accent: "#ffd166" },
-              { title: "SESSION DURATION", value: formatDuration(workDuration), note: `Login ${formatTime(loginTime)}`, accent: "#9bdcff" },
+              { title: "SESSION DURATION", value: formatDuration(liveSessionDuration), note: `Server synced\nLogin ${formatTime(sessionLoginTime)}`, accent: "#9bdcff" },
+              { title: "CURRENT BREAK", value: formatDuration(liveCurrentBreakDuration), note: sessionStats.status === "break" ? "Live break timer" : "Not on break", accent: "#ffb45c" },
+              { title: "BREAK TIME TODAY", value: formatDuration(liveTotalBreakDurationToday), note: "Server total", accent: "#ffa500" },
+              { title: "BREAK COUNT TODAY", value: sessionStats.breakCountToday, note: `${sessionStats.activeSessionCount || 0} active session${sessionStats.activeSessionCount === 1 ? "" : "s"}`, accent: "#ff7a85" },
             ].map((item) => (
               <article style={{ ...panel, padding: "22px 24px" }} key={item.title}>
                 <div style={{ fontSize: "16px", color: "#a9a1c3", lineHeight: 1.1, maxWidth: "120px" }}>
                   {item.title}
                 </div>
-                <div style={{ marginTop: "18px", fontSize: item.title === "SESSION DURATION" ? "34px" : "52px", lineHeight: 1, color: item.accent }}>
+                <div style={{ marginTop: "18px", fontSize: typeof item.value === "string" ? "34px" : "52px", lineHeight: 1, color: item.accent }}>
                   {item.value}
                 </div>
                 <div style={{ marginTop: "16px", color: "#787196", fontSize: "16px", whiteSpace: "pre-line" }}>
