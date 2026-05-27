@@ -12,8 +12,7 @@ const RESPONSE_SELECT = `
   disposition,
   sub_disposition,
   language,
-  language_other,
-  remark
+  language_other
 `;
 
 const normalizePageSize = (value) => {
@@ -82,6 +81,12 @@ const getAgentDashboard = async (req, res, next) => {
              MIN(login_time) AS login_time,
              COALESCE(SUM(
                GREATEST(
+                 EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - login_time))::int,
+                 0
+               )
+             ), 0)::int AS total_login_duration,
+             COALESCE(SUM(
+               GREATEST(
                  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - login_time))::int
                    - total_break_duration
                    - CASE
@@ -101,12 +106,24 @@ const getAgentDashboard = async (req, res, next) => {
              ), 0)::int AS current_break_duration,
              BOOL_OR(LOWER(status) = 'online') AS has_online_session,
              BOOL_OR(LOWER(status) IN ('break', 'on break')) AS has_break_session,
-             COUNT(*)::int AS active_session_count
+             COUNT(*)::int AS active_session_count,
+             (ARRAY_AGG(break_reason ORDER BY break_start_time DESC NULLS LAST)
+               FILTER (WHERE LOWER(status) IN ('break', 'on break')))[1] AS break_reason,
+             (ARRAY_AGG(break_remark ORDER BY break_start_time DESC NULLS LAST)
+               FILTER (WHERE LOWER(status) IN ('break', 'on break')))[1] AS break_remark,
+             MAX(break_start_time) FILTER (WHERE LOWER(status) IN ('break', 'on break')) AS break_start_time,
+             MAX(break_end_time) AS break_end_time
            FROM active_sessions
          ),
          today_metrics AS (
            SELECT
              COALESCE(SUM(break_count), 0)::int AS break_count_today,
+             COALESCE(SUM(
+               GREATEST(
+                 EXTRACT(EPOCH FROM (COALESCE(logout_time, CURRENT_TIMESTAMP) - login_time))::int,
+                 0
+               )
+             ), 0)::int AS staff_time_today,
              COALESCE(SUM(
                total_break_duration + CASE
                  WHEN logout_time IS NULL AND break_start_time IS NOT NULL
@@ -120,14 +137,24 @@ const getAgentDashboard = async (req, res, next) => {
          )
          SELECT
            am.login_time,
-           COALESCE(am.active_session_duration, 0) AS active_session_duration,
+           GREATEST(
+             COALESCE(tm.staff_time_today, 0) - COALESCE(tm.total_break_duration_today, 0),
+             0
+           )::int AS total_login_duration_today,
+           COALESCE(am.active_session_duration, 0) AS total_login_duration,
+           COALESCE(am.total_login_duration, 0) AS active_session_duration,
            COALESCE(tm.break_count_today, 0) AS break_count_today,
            COALESCE(tm.total_break_duration_today, 0) AS total_break_duration_today,
+           COALESCE(tm.staff_time_today, 0) AS staff_time_today,
            COALESCE(am.current_break_duration, 0) AS current_break_duration,
            COALESCE(am.active_session_count, 0) AS active_session_count,
+           am.break_reason,
+           am.break_remark,
+           am.break_start_time,
+           am.break_end_time,
            CASE
-             WHEN COALESCE(am.has_online_session, false) THEN 'online'
              WHEN COALESCE(am.has_break_session, false) THEN 'break'
+             WHEN COALESCE(am.has_online_session, false) THEN 'online'
              ELSE 'offline'
            END AS status,
            CURRENT_TIMESTAMP AS server_time,
@@ -174,11 +201,22 @@ const getAgentDashboard = async (req, res, next) => {
         session: {
           callsThisSession: session.calls_this_session || 0,
           loginTime: session.login_time,
+          totalLoginDuration: session.total_login_duration || 0,
+          totalLoginDurationToday: session.total_login_duration_today || 0,
+          total_login_time: session.total_login_duration_today || 0,
           activeSessionDuration: session.active_session_duration || 0,
           breakCountToday: session.break_count_today || 0,
           totalBreakDurationToday: session.total_break_duration_today || 0,
+          total_break_time: session.total_break_duration_today || 0,
+          staffTimeToday: session.staff_time_today || 0,
+          staff_time: session.staff_time_today || 0,
           currentBreakDuration: session.current_break_duration || 0,
+          current_break_status: session.status === "break" ? "break" : "none",
           activeSessionCount: session.active_session_count || 0,
+          breakReason: session.break_reason || "",
+          breakRemark: session.break_remark || "",
+          breakStartTime: session.break_start_time,
+          breakEndTime: session.break_end_time,
           status: session.status || "offline",
           serverTime: session.server_time,
         },
@@ -208,7 +246,8 @@ const getAgentHistory = async (req, res, next) => {
            WHEN created_at::date = CURRENT_DATE THEN 'today'
            WHEN created_at::date = CURRENT_DATE - 1 THEN 'yesterday'
            ELSE 'older'
-         END AS history_group
+         END AS history_group,
+         (created_at::date = CURRENT_DATE) AS is_editable
        FROM responses
        WHERE ${whereSql}
        ORDER BY created_at DESC

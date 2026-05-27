@@ -78,9 +78,9 @@ Dialflow.ai is an AI-powered CRM platform designed for modern call center and ag
 Ranking score is calculated using:
 
 ```text
-(Positive Calls × 10)
-+ (Connected Calls × 4)
-+ (Total Calls × 1)
+(Positive Calls x 5)
++ (Connected Calls x 3)
++ (Total Calls x 2)
 ```
 
 Priority Order:

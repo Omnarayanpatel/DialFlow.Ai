@@ -33,6 +33,7 @@ const App = () => {
 
   const user = getStoredUser();
   const role = user?.role;
+  const sessionKey = `${user?.id || ""}-${user?.employeeId || ""}-${localStorage.getItem("token") || ""}`;
 
   return (
     <Router 
@@ -70,7 +71,7 @@ const App = () => {
         />
         <Route 
           path="/agent/dashboard" 
-          element={isAuthenticated && role !== "admin" ? <Dashboard /> : <Navigate to="/login" />} 
+          element={isAuthenticated && role !== "admin" ? <Dashboard key={sessionKey} /> : <Navigate to="/login" />} 
         />
       </Routes>
     </Router>

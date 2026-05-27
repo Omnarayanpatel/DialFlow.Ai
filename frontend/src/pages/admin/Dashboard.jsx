@@ -3,8 +3,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import LogoutConfirmationModal from "../../components/common/LogoutConfirmationModal";
 import ThemeToggle from "../../components/common/ThemeToggle";
 import AdminRanking from "../../components/ranking/AdminRanking";
-import { deleteAgent, getAgentMonitoring, registerUser, updateAgent } from "../../services/authService";
-import { downloadResponsesExport, getAllResponses } from "../../services/responseService";
+import { deleteAgent, forceLogoutAgent, forceLogoutAllAgents, getAgentMonitoring, registerUser, updateAgent } from "../../services/authService";
+import { downloadResponsesExport, downloadTimeReportExport, getAllResponses, getTimeReport } from "../../services/responseService";
+import { getAdminLeaderboard } from "../../services/rankingService";
 import { useStore } from "../../store/useStore";
 import { useTheme } from "../../theme/useTheme";
 
@@ -181,6 +182,10 @@ const formatDuration = (seconds) => {
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 };
 
+const formatDurationHuman = (seconds) => {
+  return formatDuration(seconds);
+};
+
 const formatDateTime = (value) => {
   if (!value) {
     return "NA";
@@ -194,6 +199,53 @@ const formatDateTime = (value) => {
     hour12: true,
   });
 };
+
+const formatDateOnly = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  return new Date(value).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+const formatReportDateOnly = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  })
+    .format(new Date(value))
+    .replace(/\//g, "-");
+};
+
+const formatTimeOnly = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  return new Date(value).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+};
+
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 const AdminDashboard = () => {
   const { token, user } = useStore();
@@ -210,9 +262,6 @@ const AdminDashboard = () => {
   });
   const [isLoadingResponses, setIsLoadingResponses] = useState(true); // New state for loading
   const [feedback, setFeedback] = useState("");
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportProgress, setExportProgress] = useState(0);
-  const [exportHistory, setExportHistory] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dispositionFilter, setDispositionFilter] = useState("all");
@@ -228,6 +277,7 @@ const AdminDashboard = () => {
   const [agentViewMode, setAgentViewMode] = useState("grid");
   const [editingAgent, setEditingAgent] = useState(null);
   const [deletingAgent, setDeletingAgent] = useState(null);
+  const [forceLogoutTarget, setForceLogoutTarget] = useState(null);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [isAgentActionLoading, setIsAgentActionLoading] = useState(false);
   const [editAgentForm, setEditAgentForm] = useState({
@@ -241,24 +291,26 @@ const AdminDashboard = () => {
   const [reportDateTo, setReportDateTo] = useState("2026-04-28");
   const [reportAgent, setReportAgent] = useState("all");
   const [reportGenerated, setReportGenerated] = useState(false);
-  const [exportDateFrom, setExportDateFrom] = useState("2026-04-21");
-  const [exportDateTo, setExportDateTo] = useState("2026-04-28");
-  const [exportStatus, setExportStatus] = useState("all");
-  const [exportDisposition, setExportDisposition] = useState("all");
-  const [exportAgent, setExportAgent] = useState("all");
-  const [exportLanguage, setExportLanguage] = useState("all");
-  const [exportFormat, setExportFormat] = useState("csv");
-  const [exportColumns, setExportColumns] = useState([
-    "reference_id",
-    "employee_id",
-    "employee_name",
-    "call_status",
-    "disposition",
-    "sub_disposition",
-    "language",
-    "remark",
-    "created_at",
-  ]);
+  const [reportRecords, setReportRecords] = useState([]);
+  const [isReportLoading, setIsReportLoading] = useState(false);
+  const [rankingReportDateFrom, setRankingReportDateFrom] = useState("2026-04-21");
+  const [rankingReportDateTo, setRankingReportDateTo] = useState("2026-04-28");
+  const [rankingReportAgent, setRankingReportAgent] = useState("all");
+  const [rankingReportGenerated, setRankingReportGenerated] = useState(false);
+  const [rankingReportRows, setRankingReportRows] = useState([]);
+  const [isRankingReportLoading, setIsRankingReportLoading] = useState(false);
+  const [timeReportDateFrom, setTimeReportDateFrom] = useState("2026-04-21");
+  const [timeReportDateTo, setTimeReportDateTo] = useState("2026-04-28");
+  const [timeReportAgent, setTimeReportAgent] = useState("all");
+  const [timeReportGenerated, setTimeReportGenerated] = useState(false);
+  const [timeReportRecords, setTimeReportRecords] = useState([]);
+  const [timeReportSummary, setTimeReportSummary] = useState({
+    totalLoginDuration: 0,
+    totalBreakDuration: 0,
+    staffTimeDuration: 0,
+    totalBreakCount: 0,
+  });
+  const [isTimeReportLoading, setIsTimeReportLoading] = useState(false);
   const [agentForm, setAgentForm] = useState({
     employeeId: "",
     name: "",
@@ -268,21 +320,6 @@ const AdminDashboard = () => {
   useEffect(() => {
     document.title = "Admin Dashboard | Dialflow.ai";
   }, []);
-
-  const exportColumnOptions = [
-    ["reference_id", "Ref ID"],
-    ["employee_id", "Employee ID"],
-    ["employee_name", "Agent Name"],
-    ["zoho_id", "Zoho ID"],
-    ["call_status", "Call Status"],
-    ["disposition", "Disposition"],
-    ["sub_disposition", "Sub-Disposition"],
-    ["language", "Language"],
-    ["language_other", "Language (Other)"],
-    ["remark", "Remark"],
-    ["created_at", "Date & Time"],
-    ["date_only", "Date only"],
-  ];
 
   const analytics = useMemo(() => {
     const totalCalls = adminSummary.totalCalls || 0;
@@ -320,6 +357,14 @@ const AdminDashboard = () => {
     },
     [allAgents, responses]
   );
+
+  const rankingAgentOptions = useMemo(() => {
+    if (allAgents.length) {
+      return allAgents.map((agent) => [agent.id || agent.employee_id, agent.name || agent.employee_id]);
+    }
+
+    return agents;
+  }, [agents, allAgents]);
 
   const dispositions = useMemo(
     () => Array.from(new Set(responses.map((item) => item.disposition).filter(Boolean))).sort(),
@@ -388,11 +433,17 @@ const AdminDashboard = () => {
         conversionRate: stats.connected ? Math.round((stats.positive / stats.connected) * 100) : 0,
         status: normalizeAgentStatus(agent.status),
         loginTime: agent.login_time || null,
+        totalLoginDuration: agent.total_login_duration || 0,
         activeSessionDuration: agent.active_session_duration || 0,
+        staffTimeDuration: Math.max((agent.total_login_duration || 0) - (agent.total_break_duration || 0), 0),
         breakCount: agent.break_count || 0,
         totalBreakDuration: agent.total_break_duration || 0,
         currentBreakDuration: agent.current_break_duration || 0,
         activeSessionCount: agent.active_session_count || 0,
+        breakReason: agent.break_reason || "",
+        breakRemark: agent.break_remark || "",
+        breakStartTime: agent.break_start_time || null,
+        breakEndTime: agent.break_end_time || null,
         color: colors[index % colors.length],
         badge: normalizeAgentStatus(agent.status) === "online" ? "online" : normalizeAgentStatus(agent.status) === "break" ? "break" : "offline",
       };
@@ -415,18 +466,8 @@ const AdminDashboard = () => {
   }, [agentCards, agentSearch, agentStatusFilter]);
 
   const reportRows = useMemo(() => {
-    const from = reportDateFrom ? new Date(`${reportDateFrom}T00:00:00`) : null;
-    const to = reportDateTo ? new Date(`${reportDateTo}T23:59:59`) : null;
-
-    return responses.filter((item) => {
-      const createdAt = item.created_at ? new Date(item.created_at) : null;
-      const matchesFrom = !from || (createdAt && createdAt >= from);
-      const matchesTo = !to || (createdAt && createdAt <= to);
-      const matchesAgent = reportAgent === "all" || item.employee_id === reportAgent;
-
-      return matchesFrom && matchesTo && matchesAgent;
-    });
-  }, [reportAgent, reportDateFrom, reportDateTo, responses]);
+    return reportRecords;
+  }, [reportRecords]);
 
   const groupedReportRows = useMemo(() => {
     const groups = [
@@ -451,32 +492,6 @@ const AdminDashboard = () => {
 
     return groups.map(([label]) => [label, groupMap.get(label)]);
   }, [responses]);
-
-  const exportRows = useMemo(() => {
-    const from = exportDateFrom ? new Date(`${exportDateFrom}T00:00:00`) : null;
-    const to = exportDateTo ? new Date(`${exportDateTo}T23:59:59`) : null;
-
-    return responses.filter((item) => {
-      const createdAt = item.created_at ? new Date(item.created_at) : null;
-      const languageValue = item.language === "Other" ? item.language_other || "Other" : item.language;
-      const matchesFrom = !from || (createdAt && createdAt >= from);
-      const matchesTo = !to || (createdAt && createdAt <= to);
-      const matchesStatus = exportStatus === "all" || item.call_status === exportStatus;
-      const matchesDisposition = exportDisposition === "all" || item.disposition === exportDisposition;
-      const matchesAgent = exportAgent === "all" || item.employee_id === exportAgent;
-      const matchesLanguage = exportLanguage === "all" || languageValue === exportLanguage;
-
-      return matchesFrom && matchesTo && matchesStatus && matchesDisposition && matchesAgent && matchesLanguage;
-    });
-  }, [
-    exportAgent,
-    exportDateFrom,
-    exportDateTo,
-    exportDisposition,
-    exportLanguage,
-    exportStatus,
-    responses,
-  ]);
 
   const reportSummary = useMemo(() => {
     const total = reportRows.length;
@@ -596,25 +611,67 @@ const AdminDashboard = () => {
     : 0;
   const maxSubDisposition = Math.max(...subDispositionBreakdown.map((item) => item.value), 1);
   const maxAgentCalls = Math.max(...agentPerformance.map((item) => item.total), 1);
-  const totalForDonut = Math.max(analytics.connectedCalls + analytics.notConnectedCalls + analytics.positiveCalls, 1);
-  const connectedWidth = analytics.totalCalls ? Math.max((analytics.connectedCalls / analytics.totalCalls) * 100, 6) : 6;
-  const notConnectedWidth = analytics.totalCalls ? Math.max((analytics.notConnectedCalls / analytics.totalCalls) * 100, 6) : 6;
-
-  const hourlyCounts = useMemo(() => {
-    const todayStr = new Date().toDateString();
-    const hours = ["09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"];
-    return hours.map(hour => {
-      return responses.filter(r => {
-        if (!r.created_at) return false;
-        const date = new Date(r.created_at);
-        return date.toDateString() === todayStr && 
-               date.getHours().toString().padStart(2, '0') === hour;
-      }).length;
-    });
-  }, [responses]);
-
-  const maxHourlyCount = Math.max(1000, ...hourlyCounts);
-  const hourlyLabels = ["9AM", "10AM", "11AM", "12PM", "1PM", "2PM", "3PM", "4PM", "5PM", "6PM", "7PM"];
+  const maxStatusCalls = Math.max(
+    analytics.connectedCalls,
+    analytics.notConnectedCalls,
+    analytics.positiveCalls,
+    analytics.totalCalls,
+    1
+  );
+  const callStatusBars = [
+    {
+      label: "Connected",
+      value: analytics.connectedCalls,
+      note: `${analytics.connectRate}% rate`,
+      color: "linear-gradient(180deg, #31e7ff 0%, #2297ff 100%)",
+      glow: "rgba(39, 216, 255, 0.24)",
+    },
+    {
+      label: "Not Connected",
+      value: analytics.notConnectedCalls,
+      note: "Today only",
+      color: "linear-gradient(180deg, #ff8da0 0%, #ff4f77 100%)",
+      glow: "rgba(255, 113, 126, 0.24)",
+    },
+    {
+      label: "Positive",
+      value: analytics.positiveCalls,
+      note: `${analytics.conversionRate}% conversion`,
+      color: "linear-gradient(180deg, #54f0b9 0%, #20bf7f 100%)",
+      glow: "rgba(53, 229, 167, 0.24)",
+    },
+    {
+      label: "Total Calls",
+      value: analytics.totalCalls,
+      note: "All calls",
+      color: "linear-gradient(180deg, #d6a6ff 0%, #8b5cf6 100%)",
+      glow: "rgba(198, 129, 255, 0.24)",
+    },
+  ];
+  const dispositionColors = ["#25d8ef", "#35e5a7", "#ff717e", "#c681ff", "#ffd02d", "#8b5cf6"];
+  const visibleDispositionSegments = dispositionBreakdown.slice(0, 6);
+  const dispositionTotal = Math.max(
+    visibleDispositionSegments.reduce((sum, item) => sum + item.value, 0),
+    1
+  );
+  let dispositionCursor = 0;
+  const dispositionSegments = visibleDispositionSegments.map((item, index) => {
+    const start = dispositionCursor;
+    const size = (item.value / dispositionTotal) * 100;
+    dispositionCursor += size;
+    return {
+      ...item,
+      color: dispositionColors[index % dispositionColors.length],
+      percent: Math.round((item.value / dispositionTotal) * 100),
+      start,
+      end: dispositionCursor,
+    };
+  });
+  const dispositionGradient = dispositionSegments.length
+    ? `conic-gradient(${dispositionSegments
+        .map((item) => `${item.color} ${item.start}% ${item.end}%`)
+        .join(", ")})`
+    : "conic-gradient(rgba(132, 80, 255, 0.22) 0 100%)";
 
   const loadResponses = async () => {
        if (responses.length === 0) {
@@ -643,6 +700,81 @@ const AdminDashboard = () => {
       setFeedback(error.message || "Unable to load admin data.");
     } finally {
       setIsLoadingResponses(false); // Set loading false after fetch
+    }
+  };
+
+  const buildReportParams = () => ({
+    page: 1,
+    pageSize: 50,
+    dateFrom: reportDateFrom,
+    dateTo: reportDateTo,
+    employeeId: reportAgent,
+  });
+
+  const buildReportExportParams = () => ({
+    exportAll: "true",
+    dateFrom: reportDateFrom,
+    dateTo: reportDateTo,
+    employeeId: reportAgent,
+  });
+
+  const buildTimeReportParams = () => ({
+    dateFrom: timeReportDateFrom,
+    dateTo: timeReportDateTo,
+    employeeId: timeReportAgent,
+  });
+
+  const buildRankingReportParams = () => ({
+    startDate: rankingReportDateFrom,
+    endDate: rankingReportDateTo,
+    agentId: rankingReportAgent,
+  });
+
+  const loadReportRows = async () => {
+    setIsReportLoading(true);
+    try {
+      const data = await getAllResponses(token, buildReportParams());
+      setReportRecords(data.records || []);
+      setReportGenerated(true);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to generate report.");
+    } finally {
+      setIsReportLoading(false);
+    }
+  };
+
+  const loadTimeReportRows = async () => {
+    setIsTimeReportLoading(true);
+    try {
+      const data = await getTimeReport(token, buildTimeReportParams());
+      setTimeReportRecords(data.records || []);
+      setTimeReportSummary(data.summary || {
+        totalLoginDuration: 0,
+        totalBreakDuration: 0,
+        staffTimeDuration: 0,
+        totalBreakCount: 0,
+      });
+      setTimeReportGenerated(true);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to generate session and break report.");
+    } finally {
+      setIsTimeReportLoading(false);
+    }
+  };
+
+  const loadRankingReportRows = async () => {
+    setIsRankingReportLoading(true);
+    try {
+      const data = await getAdminLeaderboard(token, buildRankingReportParams());
+      setRankingReportRows(data.leaderboard || []);
+      setRankingReportGenerated(true);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to generate ranking report.");
+    } finally {
+      setIsRankingReportLoading(false);
     }
   };
 
@@ -731,6 +863,7 @@ const AdminDashboard = () => {
 
     setEditingAgent(null);
     setDeletingAgent(null);
+    setForceLogoutTarget(null);
     setEditAgentForm({ name: "", employeeId: "", password: "", role: "agent" });
   };
 
@@ -789,6 +922,31 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleForceLogout = async () => {
+    if (!forceLogoutTarget) {
+      return;
+    }
+
+    setIsAgentActionLoading(true);
+
+    try {
+      if (forceLogoutTarget.type === "all") {
+        await forceLogoutAllAgents(token);
+        setFeedback("All active agents logged out successfully.");
+      } else {
+        await forceLogoutAgent(forceLogoutTarget.agent.dbId, token);
+        setFeedback(`${forceLogoutTarget.agent.name} logged out successfully.`);
+      }
+
+      setForceLogoutTarget(null);
+      await Promise.all([loadAgents(), loadResponses()]);
+    } catch (error) {
+      setFeedback(error.message || "Force logout failed.");
+    } finally {
+      setIsAgentActionLoading(false);
+    }
+  };
+
   const clearResponseFilters = () => {
     setSearch("");
     setStatusFilter("all");
@@ -801,143 +959,57 @@ const AdminDashboard = () => {
     setResponsePage(1);
   };
 
-  const toggleExportColumn = (column) => {
-    setExportColumns((current) =>
-      current.includes(column) ? current.filter((item) => item !== column) : [...current, column]
-    );
-  };
-
-  const selectAllExportColumns = () => {
-    setExportColumns(exportColumnOptions.map(([key]) => key));
-  };
-
-  const clearExportColumns = () => {
-    setExportColumns([]);
-  };
-
-  const exportValueFor = (item, column) => {
-    if (column === "language") {
-      return item.language === "Other" ? item.language_other || "Other" : item.language || "";
-    }
-
-    if (column === "date_only") {
-      return item.created_at ? new Date(item.created_at).toLocaleDateString("en-IN") : "";
-    }
-
-    if (column === "created_at") {
-      return item.created_at ? new Date(item.created_at).toLocaleString("en-IN") : "";
-    }
-
-    return item[column] || "";
-  };
-
-  const downloadCustomExport = async (format = exportFormat) => {
-    const selectedOptions = exportColumnOptions.filter(([key]) => exportColumns.includes(key));
-
-    if (!selectedOptions.length) {
-      setFeedback("Export ke liye kam se kam ek column select karein.");
-      return;
-    }
-
-    setIsExporting(true);
-    setExportProgress(10);
-
-    // Simulate export steps
-    setTimeout(() => setExportProgress(45), 600);
-    setTimeout(() => setExportProgress(80), 1200);
-
-    const escapeCsv = (value) => {
-      if (value === null || value === undefined) {
-        return "";
-      }
-
-      const text = String(value);
-      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-    };
-
-    setTimeout(() => {
-      const fileStamp = `${exportDateFrom || "all"}-${exportDateTo || "all"}`;
-      const headers = selectedOptions.map(([, label]) => label);
-      const rows = exportRows.map((item) => selectedOptions.map(([key]) => exportValueFor(item, key)));
-      
-      const content =
-        format === "excel"
-          ? `
-            <html>
-              <head><meta charset="utf-8" /></head>
-              <body>
-                <table border="1">
-                  <thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead>
-                  <tbody>
-                    ${rows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
-                  </tbody>
-                </table>
-              </body>
-            </html>
-          `
-          : [headers.map(escapeCsv).join(","), ...rows.map((row) => row.map(escapeCsv).join(","))].join("\n");
-          
-      const blob = new Blob([content], {
-        type: format === "excel" ? "application/vnd.ms-excel;charset=utf-8" : "text/csv;charset=utf-8",
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `call_data_${fileStamp}.${format === "excel" ? "xls" : "csv"}`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-
-      setExportProgress(100);
-      
-      // Add to History
-      const newRecord = {
-        id: Date.now(),
-        time: new Date().toLocaleTimeString(),
-        format: format.toUpperCase(),
-        rows: exportRows.length,
-        agent: user.name,
-      };
-      setExportHistory(prev => [newRecord, ...prev]);
-      setFeedback("");
-
-      setTimeout(() => {
-        setIsExporting(false);
-        setExportProgress(0);
-      }, 600);
-    }, 1800);
-  };
-
-  const buildReportTableRows = () =>
-    reportRows
+  const buildReportTableRows = (rows = reportRows) =>
+    rows
       .map(
         (item) => `
           <tr>
-            <td>${item.reference_id || ""}</td>
-            <td>${item.employee_name || ""}</td>
-            <td>${item.call_status || ""}</td>
-            <td>${item.disposition || ""}</td>
-            <td>${item.sub_disposition || ""}</td>
-            <td>${item.language === "Other" ? item.language_other || "Other" : item.language || ""}</td>
-            <td>${item.remark || ""}</td>
+            <td>${escapeHtml(item.employee_name)}</td>
+            <td>${escapeHtml(item.employee_id)}</td>
+            <td>${escapeHtml(item.zoho_id)}</td>
+            <td>${escapeHtml(item.dialer_id)}</td>
+            <td>${escapeHtml(item.reference_id)}</td>
+            <td>${escapeHtml(item.call_status)}</td>
+            <td>${escapeHtml(item.call_status === "Connected" ? "Connected" : "Not Connected")}</td>
+            <td>${escapeHtml(item.disposition)}</td>
+            <td>${escapeHtml(item.sub_disposition)}</td>
+            <td>${escapeHtml(item.language === "Other" ? item.language_other || "Other" : item.language)}</td>
+            <td>${escapeHtml(formatDateOnly(item.created_at))}</td>
+            <td>${escapeHtml(formatTimeOnly(item.created_at))}</td>
           </tr>
         `
       )
       .join("");
 
-  const downloadReport = (format = "csv") => {
+  const downloadReport = async (format = "csv") => {
+    let rowsForExport = [];
+
+    try {
+      const data = await getAllResponses(token, buildReportExportParams());
+      rowsForExport = data.records || [];
+    } catch (error) {
+      setFeedback(error.message || "Unable to load report export rows.");
+      return;
+    }
+
+    if (!rowsForExport.length) {
+      setFeedback("No report rows match these filters.");
+      return;
+    }
+
     const headers = [
-      "report_type",
-      "created_at",
-      "employee_id",
       "employee_name",
+      "employee_id",
+      "zoho_id",
+      "dialer",
       "reference_id",
       "call_status",
+      "connected_status",
+      "date",
+      "time",
       "disposition",
       "sub_disposition",
       "language",
-      "remark",
     ];
     const escapeCsv = (value) => {
       if (value === null || value === undefined) {
@@ -947,18 +1019,20 @@ const AdminDashboard = () => {
       const text = String(value);
       return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     };
-    const rows = reportRows.map((item) =>
+    const rows = rowsForExport.map((item) =>
       [
-        reportType,
-        item.created_at,
-        item.employee_id,
         item.employee_name,
+        item.employee_id,
+        item.zoho_id,
+        item.dialer_id,
         item.reference_id,
         item.call_status,
+        item.call_status === "Connected" ? "Connected" : "Not Connected",
+        formatDateOnly(item.created_at),
+        formatTimeOnly(item.created_at),
         item.disposition,
         item.sub_disposition,
         item.language === "Other" ? item.language_other || "Other" : item.language,
-        item.remark,
       ]
         .map(escapeCsv)
         .join(",")
@@ -974,11 +1048,12 @@ const AdminDashboard = () => {
               <table border="1">
                 <thead>
                   <tr>
-                    <th>Ref ID</th><th>Agent</th><th>Status</th><th>Disposition</th>
-                    <th>Sub-disposition</th><th>Language</th><th>Remark</th>
+                    <th>Agent</th><th>Employee ID</th><th>Zoho ID</th><th>Dialer</th>
+                    <th>Customer Name</th><th>Call Status</th><th>Connected Status</th><th>Disposition</th>
+                    <th>Sub-disposition</th><th>Language</th><th>Date</th><th>Time</th>
                   </tr>
                 </thead>
-                <tbody>${buildReportTableRows()}</tbody>
+                <tbody>${buildReportTableRows(rowsForExport)}</tbody>
               </table>
             </body>
           </html>
@@ -997,12 +1072,42 @@ const AdminDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
-  const printReport = () => {
+  const printReport = async () => {
+    let rowsForExport = [];
+
+    try {
+      const data = await getAllResponses(token, buildReportExportParams());
+      rowsForExport = data.records || [];
+    } catch (error) {
+      setFeedback(error.message || "Unable to load report print rows.");
+      return;
+    }
+
+    if (!rowsForExport.length) {
+      setFeedback("No report rows match these filters.");
+      return;
+    }
+
     const printWindow = window.open("", "_blank", "width=1100,height=800");
 
     if (!printWindow) {
       return;
     }
+
+    const total = rowsForExport.length;
+    const connected = rowsForExport.filter((item) => item.call_status === "Connected").length;
+    const positive = rowsForExport.filter(
+      (item) => item.disposition === "Positive" || item.disposition === "Already Positive"
+    ).length;
+    const callback = rowsForExport.filter((item) => item.disposition === "Call Back").length;
+    const connectRate = total ? Math.round((connected / total) * 100) : 0;
+    const printKpis = [
+      ["TOTAL CALLS", total],
+      ["CONNECTED", connected],
+      ["CONNECT RATE", `${connectRate}%`],
+      ["POSITIVE", positive],
+      ["CALL BACK", callback],
+    ];
 
     printWindow.document.write(`
       <html>
@@ -1023,20 +1128,172 @@ const AdminDashboard = () => {
         <body>
           <h1>Dialflow.ai ${reportType} report</h1>
           <div style="color:#6b7280;margin-bottom:6px;">Powered by Dhritii.ai</div>
-          <div>${reportDateFrom} to ${reportDateTo} | ${reportRows.length} records</div>
+          <div>${reportDateFrom} to ${reportDateTo} | ${rowsForExport.length} records</div>
           <div class="kpis">
-            ${reportKpis
+            ${printKpis
               .map(([label, value]) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div></div>`)
               .join("")}
           </div>
           <table>
             <thead>
               <tr>
-                <th>Ref ID</th><th>Agent</th><th>Status</th><th>Disposition</th>
-                <th>Sub-disposition</th><th>Language</th><th>Remark</th>
+                <th>Agent</th><th>Employee ID</th><th>Zoho ID</th><th>Dialer</th>
+                <th>Customer Name</th><th>Call Status</th><th>Connected Status</th><th>Disposition</th>
+                <th>Sub-disposition</th><th>Language</th><th>Date</th><th>Time</th>
               </tr>
             </thead>
-            <tbody>${buildReportTableRows()}</tbody>
+            <tbody>${buildReportTableRows(rowsForExport)}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  const downloadTimeReport = async () => {
+    if (!timeReportRecords.length) {
+      setFeedback("No session or break rows match these filters.");
+      return;
+    }
+
+    try {
+      await downloadTimeReportExport(token, buildTimeReportParams());
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to download session and break report.");
+    }
+  };
+
+  const rankingReportDateLabel = () => {
+    if (rankingReportDateFrom && rankingReportDateTo) {
+      return rankingReportDateFrom === rankingReportDateTo
+        ? rankingReportDateFrom
+        : `${rankingReportDateFrom} to ${rankingReportDateTo}`;
+    }
+
+    return rankingReportDateFrom || rankingReportDateTo || "All Dates";
+  };
+
+  const downloadRankingReport = () => {
+    if (!rankingReportRows.length) {
+      setFeedback("No ranking rows match these filters.");
+      return;
+    }
+
+    const headers = [
+      "Rank",
+      "Agent Name",
+      "Employee ID",
+      "Date",
+      "Score",
+      "Positive",
+      "Connected",
+      "Total Calls",
+      "Conversion %",
+    ];
+    const escapeCsv = (value) => {
+      const text = value === null || value === undefined ? "" : String(value);
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const dateLabel = rankingReportDateLabel();
+    const rows = rankingReportRows.map((row) =>
+      [
+        row.rank,
+        row.agent_name,
+        row.employee_id,
+        dateLabel,
+        row.ranking_score,
+        row.positive_calls,
+        row.connected_calls,
+        row.total_calls,
+        row.conversion_rate,
+      ]
+        .map(escapeCsv)
+        .join(",")
+    );
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ranking-conversion-report-${rankingReportDateFrom || "start"}-to-${rankingReportDateTo || "end"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const buildTimeReportTableRows = () =>
+    timeReportRecords
+      .map(
+        (item) => `
+          <tr>
+            <td>${escapeHtml(item.agent_name)}</td>
+            <td>${escapeHtml(item.employee_id)}</td>
+            <td>${escapeHtml(formatReportDateOnly(item.login_time))}</td>
+            <td>${escapeHtml(formatTimeOnly(item.login_time))}</td>
+            <td>${escapeHtml(formatTimeOnly(item.logout_time))}</td>
+            <td>${escapeHtml(formatTimeOnly(item.break_start_time))}</td>
+            <td>${escapeHtml(formatTimeOnly(item.break_end_time))}</td>
+            <td>${escapeHtml(item.break_reason || "")}</td>
+            <td>${escapeHtml(formatDurationHuman(item.total_login_duration))}</td>
+            <td>${escapeHtml(formatDurationHuman(item.staff_time_duration))}</td>
+            <td>${escapeHtml(formatDurationHuman(item.total_break_duration))}</td>
+            <td>${escapeHtml(item.break_count)}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+  const printTimeReport = () => {
+    if (!timeReportRecords.length) {
+      setFeedback("No session or break rows match these filters.");
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=1100,height=800");
+
+    if (!printWindow) {
+      return;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Dialflow.ai Session and Break Time Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
+            h1 { margin-bottom: 4px; }
+            .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
+            .kpi { border: 1px solid #d1d5db; padding: 12px; border-radius: 8px; }
+            .label { color: #6b7280; font-size: 12px; }
+            .value { font-size: 20px; margin-top: 8px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 12px; }
+            th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+            th { background: #f3f4f6; }
+          </style>
+        </head>
+        <body>
+          <h1>Dialflow.ai Session and Break Time Report</h1>
+          <div style="color:#6b7280;margin-bottom:6px;">Powered by Dhritii.ai</div>
+          <div>${timeReportDateFrom} to ${timeReportDateTo} | ${timeReportRecords.length} sessions</div>
+          <div class="kpis">
+            <div class="kpi"><div class="label">Total Login Time</div><div class="value">${formatDurationHuman(timeReportSummary.totalLoginDuration)}</div></div>
+            <div class="kpi"><div class="label">Total Staff Time</div><div class="value">${formatDurationHuman(timeReportSummary.staffTimeDuration)}</div></div>
+            <div class="kpi"><div class="label">Break Time</div><div class="value">${formatDurationHuman(timeReportSummary.totalBreakDuration)}</div></div>
+            <div class="kpi"><div class="label">Break Count</div><div class="value">${timeReportSummary.totalBreakCount}</div></div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent Name</th><th>Employee ID</th><th>Login Date</th><th>Login Time</th><th>Logout Time</th>
+                <th>Break Start Time</th><th>Break End Time</th>
+                <th>Break Reason</th>
+                <th>Total Login Time</th><th>Total Staff Time</th><th>Break Time</th><th>Break Count</th>
+              </tr>
+            </thead>
+            <tbody>${buildTimeReportTableRows()}</tbody>
           </table>
         </body>
       </html>
@@ -1119,6 +1376,27 @@ const AdminDashboard = () => {
             flex-wrap: wrap;
           }
 
+          .overview-status-bars {
+            margin-top: 26px;
+            min-height: 270px;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(112px, 1fr));
+            gap: 24px;
+            align-items: end;
+          }
+
+          .overview-disposition-card {
+            min-height: 360px;
+          }
+
+          .overview-disposition-body {
+            margin-top: 28px;
+            display: grid;
+            grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+            gap: 32px;
+            align-items: center;
+          }
+
           @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
@@ -1175,6 +1453,15 @@ const AdminDashboard = () => {
               grid-template-columns: 1fr !important;
             }
 
+            .overview-status-bars {
+              grid-template-columns: repeat(4, minmax(88px, 1fr)) !important;
+              gap: 16px !important;
+            }
+
+            .overview-disposition-body {
+              grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) !important;
+            }
+
             .admin-filter-grid {
               grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             }
@@ -1207,8 +1494,7 @@ const AdminDashboard = () => {
 
             .admin-kpi-grid,
             .admin-filter-grid,
-            .admin-mini-grid,
-            .admin-export-actions {
+            .admin-mini-grid {
               grid-template-columns: 1fr !important;
             }
 
@@ -1240,6 +1526,16 @@ const AdminDashboard = () => {
             .admin-main select,
             .admin-main button {
               max-width: 100%;
+            }
+
+            .overview-status-bars {
+              grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+              min-height: 300px !important;
+            }
+
+            .overview-disposition-body {
+              grid-template-columns: 1fr !important;
+              justify-items: center;
             }
           }
         `}
@@ -1345,7 +1641,6 @@ const AdminDashboard = () => {
               ["responses", "All responses", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
-              ["export", "Export", "download"],
             ].map(([id, label, icon]) => (
               <button
                 type="button"
@@ -1408,11 +1703,11 @@ const AdminDashboard = () => {
                   </div>
                 </div>
                 <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px" }}>
-                  <select className="admin-select" style={{ ...input, width: "190px" }} defaultValue="today">
+                  {/* <select className="admin-select" style={{ ...input, width: "190px" }} defaultValue="today">
                     <option value="today">Today</option>
                     <option value="week">This week</option>
                     <option value="month">This month</option>
-                  </select>
+                  </select> */}
                   <button type="button" onClick={() => downloadResponsesExport(token)} style={ghostButton}>
                     Export
                   </button>
@@ -1682,7 +1977,7 @@ const AdminDashboard = () => {
                   <table style={{ width: "100%", minWidth: "1050px", borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ color: "#5f637d", textAlign: "left", fontSize: "15px", letterSpacing: "0.06em" }}>
-                        {["#REF ID ↕", "AGENT ↕", "STATUS ↕", "DISPOSITION ↕", "SUB-DISP", "LANGUAGE", "REMARK"].map((heading) => (
+                        {["#REF ID ↕", "AGENT ↕", "STATUS ↕", "DISPOSITION ↕", "SUB-DISP", "LANGUAGE"].map((heading) => (
                           <th key={heading} style={{ padding: "15px 14px", borderBottom: "1px solid rgba(122, 73, 255, 0.28)" }}>
                             {heading}
                           </th>
@@ -1710,7 +2005,6 @@ const AdminDashboard = () => {
                             </td>
                             <td style={{ padding: "17px 14px", color: "#aeb5d4" }}>{item.sub_disposition || "NA"}</td>
                             <td style={{ padding: "17px 14px", color: "#aeb5d4" }}>{item.language === "Other" ? item.language_other || "Other" : item.language}</td>
-                            <td style={{ padding: "17px 14px", color: "#7d849f", maxWidth: "220px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.remark || "-"}</td>
                           </tr>
                         );
                       })}
@@ -1766,6 +2060,22 @@ const AdminDashboard = () => {
                     <option value="break">break</option>
                     <option value="offline">offline</option>
                   </select>
+                  <button
+                    type="button"
+                    onClick={() => setForceLogoutTarget({ type: "all" })}
+                    disabled={!agentCards.some((agent) => agent.status !== "offline")}
+                    style={{
+                      ...ghostButton,
+                      padding: "15px 18px",
+                      fontSize: "18px",
+                      color: "#ffb45c",
+                      borderColor: "rgba(255, 180, 92, 0.42)",
+                      background: "rgba(255, 180, 92, 0.1)",
+                      opacity: agentCards.some((agent) => agent.status !== "offline") ? 1 : 0.5,
+                    }}
+                  >
+                    Logout All Agents
+                  </button>
                   <div style={{ ...panel, display: "flex", padding: "6px", borderRadius: "16px", gap: "6px" }}>
                     {["grid", "table"].map((mode) => (
                       <button
@@ -1794,8 +2104,8 @@ const AdminDashboard = () => {
                 {[
                   ["TOTAL AGENTS", agentCards.length, "#c681ff"],
                   ["ONLINE NOW", agentCards.filter((agent) => agent.status === "online").length, "#35e5a7"],
-                  ["AVG CONNECT RATE", `${agentCards.length ? Math.round(agentCards.reduce((sum, agent) => sum + agent.connectRate, 0) / agentCards.length) : 0}%`, "#27d8ff"],
-                  ["TOP PERFORMER", agentCards[0]?.name || "NA", "#ffd02d"],
+                  ["TODAY OFFLINE", agentCards.filter((agent) => agent.status === "offline").length, "#ff7685"],
+                  ["AGENTS ON BREAK", agentCards.filter((agent) => agent.status === "break").length, "#ffa500"],
                 ].map(([title, value, accent]) => (
                   <article key={title} style={{ ...panel, padding: "26px 28px", minHeight: "150px", borderTop: `3px solid ${accent}` }}>
                     <div style={{ color: "#8f98b7", fontSize: "18px", lineHeight: 1.08 }}>{title}</div>
@@ -1852,6 +2162,14 @@ const AdminDashboard = () => {
                             <div style={{ marginTop: "8px", color: "#737b98", fontSize: "15px" }}>
                               Login {formatDateTime(agent.loginTime)} | Sessions {agent.activeSessionCount}
                             </div>
+                            {agent.status === "break" && agent.breakReason ? (
+                              <div title={agent.breakRemark || agent.breakReason} style={{ marginTop: "8px", color: "#ffcf8a", fontSize: "15px", lineHeight: 1.35 }}>
+                                {agent.breakReason}
+                                {agent.breakRemark ? (
+                                  <span style={{ color: "#8f98b7" }}> | {agent.breakRemark}</span>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
                         </div>
 
@@ -1870,10 +2188,10 @@ const AdminDashboard = () => {
 
                         <div className="admin-mini-grid" style={{ marginTop: "16px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
                           {[
-                            ["SESSION", formatDuration(agent.activeSessionDuration), "#ffd02d"],
+                            ["STAFF TIME", formatDuration(agent.totalLoginDuration), "#9bdcff"],
+                            ["TOTAL LOGIN", formatDuration(agent.staffTimeDuration), "#35e5a7"],
                             ["BREAKS", agent.breakCount, "#ffa500"],
                             ["BREAK TIME", formatDuration(agent.totalBreakDuration), "#ffb45c"],
-                            ["CURRENT BREAK", agent.status === "break" ? formatDuration(agent.currentBreakDuration) : "00:00:00", "#ff7685"],
                           ].map(([label, value, color]) => (
                             <div key={label} style={{ background: "rgba(255,255,255,0.035)", borderRadius: "12px", padding: "13px 12px", textAlign: "center" }}>
                               <div style={{ color, fontSize: typeof value === "number" ? "24px" : "21px", lineHeight: 1 }}>{value}</div>
@@ -1919,6 +2237,23 @@ const AdminDashboard = () => {
                           <button type="button" onClick={() => openEditAgent(agent)} style={{ ...ghostButton, padding: "7px 14px", borderRadius: "999px", fontSize: "14px" }}>
                             Edit
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setForceLogoutTarget({ type: "single", agent })}
+                            disabled={agent.status === "offline"}
+                            style={{
+                              ...ghostButton,
+                              padding: "7px 14px",
+                              borderRadius: "999px",
+                              fontSize: "14px",
+                              color: "#ffb45c",
+                              borderColor: "rgba(255, 180, 92, 0.42)",
+                              background: "rgba(255, 180, 92, 0.08)",
+                              opacity: agent.status === "offline" ? 0.5 : 1,
+                            }}
+                          >
+                            Force Logout
+                          </button>
                           <button type="button" onClick={() => setDeletingAgent(agent)} style={{ ...ghostButton, padding: "7px 14px", borderRadius: "999px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>
                             Delete
                           </button>
@@ -1936,7 +2271,7 @@ const AdminDashboard = () => {
                   <table style={{ width: "100%", minWidth: "1500px", borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ textAlign: "left", color: "#6d728d", letterSpacing: "0.06em" }}>
-                        {["AGENT", "EMPLOYEE ID", "STATUS", "LOGIN", "SESSION", "BREAKS", "BREAK TIME", "CURRENT BREAK", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION", "ACTIONS"].map((heading) => (
+                        {["AGENT", "EMPLOYEE ID", "STATUS", "LOGIN", "TOTAL LOGIN TIME", "STAFF TIME", "BREAKS", "BREAK TIME", "BREAK REASON", "CALLS", "CONNECTED", "POSITIVE", "CONNECT RATE", "CONVERSION", "ACTIONS"].map((heading) => (
                           <th key={heading} style={{ padding: "14px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
                         ))}
                       </tr>
@@ -1964,10 +2299,18 @@ const AdminDashboard = () => {
                             </span>
                           </td>
                           <td style={{ padding: "15px 14px" }}>{formatDateTime(agent.loginTime)}</td>
-                          <td style={{ padding: "15px 14px" }}>{formatDuration(agent.activeSessionDuration)}</td>
+                          <td style={{ padding: "15px 14px" }}>{formatDuration(agent.totalLoginDuration)}</td>
+                          <td style={{ padding: "15px 14px" }}>{formatDuration(agent.staffTimeDuration)}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.breakCount}</td>
                           <td style={{ padding: "15px 14px" }}>{formatDuration(agent.totalBreakDuration)}</td>
-                          <td style={{ padding: "15px 14px" }}>{agent.status === "break" ? formatDuration(agent.currentBreakDuration) : "00:00:00"}</td>
+                          <td title={agent.breakRemark || agent.breakReason} style={{ padding: "15px 14px", color: agent.status === "break" ? "#ffcf8a" : "#6d728d", maxWidth: "180px" }}>
+                            {agent.status === "break" && agent.breakReason ? (
+                              <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {agent.breakReason}
+                                {agent.breakRemark ? ` | ${agent.breakRemark}` : ""}
+                              </div>
+                            ) : "NA"}
+                          </td>
                           <td style={{ padding: "15px 14px" }}>{agent.calls}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.connected}</td>
                           <td style={{ padding: "15px 14px" }}>{agent.positive}</td>
@@ -1977,6 +2320,23 @@ const AdminDashboard = () => {
                             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                               <button type="button" onClick={() => openEditAgent(agent)} style={{ ...ghostButton, padding: "8px 12px", borderRadius: "10px", fontSize: "14px" }}>
                                 Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setForceLogoutTarget({ type: "single", agent })}
+                                disabled={agent.status === "offline"}
+                                style={{
+                                  ...ghostButton,
+                                  padding: "8px 12px",
+                                  borderRadius: "10px",
+                                  fontSize: "14px",
+                                  color: "#ffb45c",
+                                  borderColor: "rgba(255, 180, 92, 0.42)",
+                                  background: "rgba(255, 180, 92, 0.08)",
+                                  opacity: agent.status === "offline" ? 0.5 : 1,
+                                }}
+                              >
+                                Force Logout
                               </button>
                               <button type="button" onClick={() => setDeletingAgent(agent)} style={{ ...ghostButton, padding: "8px 12px", borderRadius: "10px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>
                                 Delete
@@ -2000,52 +2360,19 @@ const AdminDashboard = () => {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => downloadReport("csv")} style={ghostButton}>
+                  {/* <button type="button" onClick={() => downloadReport("csv")} style={ghostButton}>
                     Download CSV
-                  </button>
-                  <button type="button" onClick={() => downloadReport("excel")} style={ghostButton}>
+                  </button> */}
+                  {/* <button type="button" onClick={() => downloadReport("excel")} style={ghostButton}>
                     Download Excel
-                  </button>
-                  <button type="button" onClick={printReport} style={ghostButton}>
+                  </button> */}
+                  {/* <button type="button" onClick={printReport} style={ghostButton}>
                     Print / PDF
-                  </button>
+                  </button> */}
                 </div>
               </div>
 
-              <section className="admin-filter-grid" style={{ marginTop: "38px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px", maxWidth: "760px" }}>
-                {[
-                  ["daily", "Daily Report", "🗓"],
-                  ["agent", "Agent-wise Report", "👤"],
-                  ["disposition", "Disposition Report", "📊"],
-                  ["conversion", "Conversion Report", "🎯"],
-                ].map(([id, label, icon]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => {
-                      setReportType(id);
-                      setReportGenerated(false);
-                    }}
-                    style={{
-                      ...ghostButton,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: "12px",
-                      minHeight: "72px",
-                      fontSize: "24px",
-                      borderColor: reportType === id ? "rgba(168, 85, 247, 0.78)" : "rgba(154, 145, 176, 0.44)",
-                      background: reportType === id ? "rgba(122, 73, 255, 0.16)" : "transparent",
-                    }}
-                    className="admin-action-button"
-                  >
-                    <span>{icon}</span>
-                    <span>{label}</span>
-                  </button>
-                ))}
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px 32px", maxWidth: "930px" }}>
+              {/* <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px 32px", maxWidth: "930px" }}>
                 <div className="admin-section-heading">
                   <h2 style={{ margin: 0, fontSize: "22px" }}>Grouped Reports</h2>
                   <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
@@ -2100,11 +2427,11 @@ const AdminDashboard = () => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </section> */}
 
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "38px", padding: "32px", maxWidth: "930px" }}>
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "28px", padding: "32px", maxWidth: "930px" }}>
                 <div className="admin-section-heading">
-                  <h2 style={{ margin: 0, fontSize: "24px" }}>Report Configuration</h2>
+                  <h2 style={{ margin: 0, fontSize: "24px" }}>All Responses Reports</h2>
                   <span style={{ color: "#7d849f", fontSize: "14px" }}>Choose scope, then generate preview</span>
                 </div>
                 <div style={{ marginTop: "26px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
@@ -2155,14 +2482,265 @@ const AdminDashboard = () => {
                   </label>
                   <button
                     type="button"
-                    onClick={() => setReportGenerated(true)}
+                    onClick={loadReportRows}
+                    disabled={isReportLoading}
                     style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px", background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}
                     className="admin-action-button"
                   >
-                    Generate
+                    {isReportLoading ? "Generating..." : "Generate"}
                   </button>
                 </div>
               </section>
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "24px", padding: "32px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
+                  <h2 style={{ margin: 0, fontSize: "24px" }}>Ranking & Conversion % Report</h2>
+                </div>
+                <div style={{ marginTop: "24px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div className="admin-filter-grid" style={{ marginTop: "26px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "18px", alignItems: "end" }}>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    START DATE
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={rankingReportDateFrom}
+                      onChange={(event) => {
+                        setRankingReportDateFrom(event.target.value);
+                        setRankingReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    END DATE
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={rankingReportDateTo}
+                      onChange={(event) => {
+                        setRankingReportDateTo(event.target.value);
+                        setRankingReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    AGENT
+                    <select
+                      className="admin-select"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={rankingReportAgent}
+                      onChange={(event) => {
+                        setRankingReportAgent(event.target.value);
+                        setRankingReportGenerated(false);
+                      }}
+                    >
+                      <option value="all">All Agents</option>
+                      {rankingAgentOptions.map(([id, name]) => (
+                        <option key={id} value={id}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={loadRankingReportRows}
+                    disabled={isRankingReportLoading}
+                    style={{ ...ghostButton, minWidth: "210px", minHeight: "60px", fontSize: "19px", background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}
+                    className="admin-action-button"
+                  >
+                    {isRankingReportLoading ? "Generating..." : "Generate Report"}
+                  </button>
+                </div>
+              </section>
+
+              {rankingReportGenerated ? (
+                <section className="admin-soft-panel" style={{ ...panel, marginTop: "24px", padding: "30px 34px", maxWidth: "930px" }}>
+                  <div className="admin-section-heading">
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: "24px" }}>Ranking & Conversion % Report</h2>
+                      <div style={{ marginTop: "8px", color: "#9da6c3" }}>
+                        {rankingReportDateLabel()} | {rankingReportRows.length} agents
+                      </div>
+                    </div>
+                    <button type="button" onClick={downloadRankingReport} className="admin-action-button" style={ghostButton}>
+                      Download CSV
+                    </button>
+                  </div>
+
+                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "1120px", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                          {["RANK", "AGENT NAME", "EMPLOYEE ID", "DATE", "SCORE", "POSITIVE", "CONNECTED", "TOTAL CALLS", "CONVERSION %"].map((heading) => (
+                            <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rankingReportRows.map((row) => (
+                          <tr key={row.agent_id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            <td style={{ padding: "14px 12px", color: "#d9b7ff", fontWeight: 700 }}>{row.rank}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.agent_name}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.employee_id}</td>
+                            <td style={{ padding: "14px 12px" }}>{rankingReportDateLabel()}</td>
+                            <td style={{ padding: "14px 12px", color: "#ffd166", fontWeight: 700 }}>{row.ranking_score}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.positive_calls}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.connected_calls}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.total_calls}</td>
+                            <td style={{ padding: "14px 12px" }}>{row.conversion_rate}%</td>
+                          </tr>
+                        ))}
+                        {!rankingReportRows.length ? (
+                          <tr>
+                            <td colSpan="9" style={{ padding: "22px 12px" }}>
+                              <div className="admin-empty-state">No ranking rows match these filters.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "24px", padding: "32px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
+                  <h2 style={{ margin: 0, fontSize: "24px" }}>Session & Break Report</h2>
+                  <span style={{ color: "#7d849f", fontSize: "14px" }}>Server timestamp based session export</span>
+                </div>
+                <div style={{ marginTop: "24px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div className="admin-filter-grid" style={{ marginTop: "26px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "18px", alignItems: "end" }}>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE FROM
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={timeReportDateFrom}
+                      onChange={(event) => {
+                        setTimeReportDateFrom(event.target.value);
+                        setTimeReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE TO
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={timeReportDateTo}
+                      onChange={(event) => {
+                        setTimeReportDateTo(event.target.value);
+                        setTimeReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    AGENT
+                    <select
+                      className="admin-select"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={timeReportAgent}
+                      onChange={(event) => {
+                        setTimeReportAgent(event.target.value);
+                        setTimeReportGenerated(false);
+                      }}
+                    >
+                      <option value="all">All agents</option>
+                      {agents.map(([id, name]) => (
+                        <option key={id} value={id}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={loadTimeReportRows}
+                    disabled={isTimeReportLoading}
+                    style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px", background: "rgba(39, 216, 255, 0.14)", borderColor: "rgba(39, 216, 255, 0.42)" }}
+                    className="admin-action-button"
+                  >
+                    {isTimeReportLoading ? "Generating..." : "Generate"}
+                  </button>
+                </div>
+              </section>
+
+              {timeReportGenerated ? (
+                <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
+                  <div className="admin-section-heading">
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: "24px" }}>
+                        Session & Break Report Preview
+                      </h2>
+                      <div style={{ marginTop: "8px", color: "#9da6c3" }}>
+                        {timeReportDateFrom} to {timeReportDateTo} | {timeReportRecords.length} sessions
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                      <button type="button" onClick={downloadTimeReport} className="admin-action-button" style={ghostButton}>
+                        Download CSV
+                      </button>
+                      <button type="button" onClick={printTimeReport} className="admin-action-button" style={ghostButton}>
+                        Print / PDF
+                      </button>
+                    </div>
+                  </div>
+
+                  <section className="admin-kpi-grid" style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "14px" }}>
+                    {[
+                      ["TOTAL LOGIN TIME", formatDurationHuman(timeReportSummary.totalLoginDuration), "#9bdcff"],
+                      ["TOTAL STAFF TIME", formatDurationHuman(timeReportSummary.staffTimeDuration), "#35e5a7"],
+                      ["BREAK TIME", formatDurationHuman(timeReportSummary.totalBreakDuration), "#ffb45c"],
+                      ["BREAK COUNT", timeReportSummary.totalBreakCount, "#ff717e"],
+                    ].map(([title, value, accent]) => (
+                      <article key={title} style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(122, 73, 255, 0.14)", borderRadius: "12px", padding: "18px" }}>
+                        <div style={{ color: "#8f98b7", fontSize: "14px" }}>{title}</div>
+                        <div style={{ marginTop: "10px", color: accent, fontSize: typeof value === "number" ? "30px" : "22px" }}>{value}</div>
+                      </article>
+                    ))}
+                  </section>
+
+                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "1180px", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                          {["AGENT NAME", "EMPLOYEE ID", "LOGIN DATE", "LOGIN TIME", "LOGOUT TIME", "BREAK START", "BREAK END", "TOTAL LOGIN TIME", "TOTAL STAFF TIME", "BREAK TIME", "BREAK COUNT"].map((heading) => (
+                            <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {timeReportRecords.slice(0, 10).map((item) => (
+                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            <td style={{ padding: "14px 12px" }}>{item.agent_name}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.employee_id}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatReportDateOnly(item.login_time)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.login_time)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.logout_time)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.break_start_time)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.break_end_time)}</td>
+                            <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{formatDurationHuman(item.total_login_duration)}</td>
+                            <td style={{ padding: "14px 12px", color: "#35e5a7" }}>{formatDurationHuman(item.staff_time_duration)}</td>
+                            <td style={{ padding: "14px 12px", color: "#ffb45c" }}>{formatDurationHuman(item.total_break_duration)}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.break_count}</td>
+                          </tr>
+                        ))}
+                        {!timeReportRecords.length ? (
+                          <tr>
+                            <td colSpan="11" style={{ padding: "22px 12px" }}>
+                              <div className="admin-empty-state">No session or break rows match these filters.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
 
               {reportGenerated ? (
                 <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
@@ -2292,10 +2870,10 @@ const AdminDashboard = () => {
                   </section>
 
                   <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
-                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "820px", borderCollapse: "collapse" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "1260px", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
-                          {["REF ID", "AGENT", "STATUS", "DISPOSITION", "SUB-DISP", "LANGUAGE"].map((heading) => (
+                          {["CUSTOMER NAME", "AGENT", "EMPLOYEE ID", "ZOHO ID", "DIALER", "CALL STATUS", "CONNECTED STATUS", "DISPOSITION", "SUB-DISP", "LANGUAGE", "DATE / TIME"].map((heading) => (
                             <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
                               {heading}
                             </th>
@@ -2310,20 +2888,28 @@ const AdminDashboard = () => {
                             <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
                               <td style={{ padding: "16px 12px", color: "#c681ff", fontWeight: 700 }}>{item.reference_id}</td>
                               <td style={{ padding: "14px 12px" }}>{item.employee_name}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.employee_id}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.zoho_id || "NA"}</td>
+                              <td style={{ padding: "14px 12px" }}>{item.dialer_id || "NA"}</td>
                               <td style={{ padding: "14px 12px" }}>
                                 <span style={{ display: "inline-flex", padding: "6px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
                                   {item.call_status}
                                 </span>
                               </td>
+                              <td style={{ padding: "14px 12px" }}>{item.call_status === "Connected" ? "Connected" : "Not Connected"}</td>
                               <td style={{ padding: "14px 12px" }}>{item.disposition}</td>
                               <td style={{ padding: "14px 12px" }}>{item.sub_disposition || "NA"}</td>
                               <td style={{ padding: "14px 12px" }}>{item.language === "Other" ? item.language_other || "Other" : item.language}</td>
+                              <td style={{ padding: "14px 12px" }}>
+                                <div style={{ color: "#d7dce9" }}>{formatDateOnly(item.created_at)}</div>
+                                <div style={{ marginTop: "4px", color: "#7d849f", fontSize: "13px" }}>{formatTimeOnly(item.created_at)}</div>
+                              </td>
                             </tr>
                           );
                         })}
                         {!reportRows.length ? (
                           <tr>
-                            <td colSpan="6" style={{ padding: "22px 12px" }}>
+                            <td colSpan="11" style={{ padding: "22px 12px" }}>
                               <div className="admin-empty-state">No report rows match these filters.</div>
                             </td>
                           </tr>
@@ -2334,291 +2920,7 @@ const AdminDashboard = () => {
                 </section>
               ) : null}
             </>
-          ) : activeView === "export" ? (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
-                <div>
-                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Export Data</h1>
-                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
-                    Download call data as CSV or Excel with custom filters & columns
-                  </div>
-                </div>
-                <span style={{ padding: "8px 18px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
-                  {exportRows.length} rows selected
-                </span>
-              </div>
 
-              {isLoadingResponses ? (
-                <div style={{ marginTop: "32px", textAlign: "center", color: "#aeb5d4", fontSize: "18px" }}>
-                  <div style={{
-                    border: "4px solid rgba(168, 85, 247, 0.2)",
-                    borderTop: "4px solid #a855f7",
-                    borderRadius: "50%",
-                    width: "40px",
-                    height: "40px",
-                    animation: "spin 1s linear infinite",
-                    margin: "0 auto 16px auto"
-                  }} />
-                  Loading responses...
-                </div>
-              ) : (
-              <>
-              <section className="admin-filter-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px", maxWidth: "860px" }}>
-                {[
-                  ["csv", "CSV Export", "Comma-separated values - compatible with Google Sheets, any spreadsheet, and data tools.", ".csv"],
-                  ["excel", "Excel Export", "Multi-sheet Excel file style - opens in Microsoft Excel and spreadsheet apps.", ".xls"],
-                ].map(([id, title, description, tag]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setExportFormat(id)}
-                    style={{
-                      ...panel,
-                      minHeight: "210px",
-                      padding: "28px",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      borderColor: exportFormat === id ? "#a855f7" : "rgba(132, 80, 255, 0.34)",
-                      background: exportFormat === id ? "#18102f" : "#121027",
-                      position: "relative",
-                    }}
-                    className="admin-hover-card"
-                  >
-                    {exportFormat === id ? (
-                      <span style={{ position: "absolute", right: "18px", top: "18px", width: "28px", height: "28px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#8b3ff4", color: "#fff", fontWeight: 700 }}>
-                        ✓
-                      </span>
-                    ) : null}
-                    <div style={{ width: "54px", height: "54px", borderRadius: "12px", display: "grid", placeItems: "center", background: id === "csv" ? "rgba(139, 63, 244, 0.24)" : "rgba(38, 230, 173, 0.12)", fontSize: "28px" }}>
-                      {id === "csv" ? "▤" : "▥"}
-                    </div>
-                    <h2 style={{ margin: "20px 0 0", color: "#f4f0ff", fontSize: "21px" }}>{title}</h2>
-                    <p style={{ margin: "10px 0 0", color: "#9da6c3", lineHeight: 1.45, fontSize: "15px" }}>{description}</p>
-                    <span style={{ display: "inline-flex", marginTop: "16px", padding: "6px 13px", borderRadius: "999px", color: "#7d849f", border: "1px solid rgba(122, 73, 255, 0.34)", background: "rgba(122, 73, 255, 0.12)" }}>
-                      {tag}
-                    </span>
-                  </button>
-                ))}
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
-                <div className="admin-section-heading">
-                  <h2 style={{ margin: 0, fontSize: "19px" }}>Filters</h2>
-                  <button type="button" onClick={() => { setExportStatus("all"); setExportDisposition("all"); setExportAgent("all"); setExportLanguage("all"); }} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>
-                    All data selected
-                  </button>
-                </div>
-                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                <div className="admin-kpi-grid" style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "18px" }}>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Date from
-                    <input type="date" style={{ ...input, marginTop: "8px" }} value={exportDateFrom} onChange={(event) => setExportDateFrom(event.target.value)} />
-                  </label>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Date to
-                    <input type="date" style={{ ...input, marginTop: "8px" }} value={exportDateTo} onChange={(event) => setExportDateTo(event.target.value)} />
-                  </label>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Call status
-                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportStatus} onChange={(event) => setExportStatus(event.target.value)}>
-                      <option value="all">All</option>
-                      <option value="Connected">Connected</option>
-                      <option value="Not Connected">Not Connected</option>
-                    </select>
-                  </label>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Disposition
-                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportDisposition} onChange={(event) => setExportDisposition(event.target.value)}>
-                      <option value="all">All</option>
-                      {dispositions.map((disposition) => (
-                        <option key={disposition} value={disposition}>{disposition}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Agent
-                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportAgent} onChange={(event) => setExportAgent(event.target.value)}>
-                      <option value="all">All agents</option>
-                      {agents.map(([id, name]) => (
-                        <option key={id} value={id}>{name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label style={{ color: "#9da6c3", fontSize: "13px", textTransform: "uppercase" }}>
-                    Language
-                    <select className="admin-select" style={{ ...input, marginTop: "8px" }} value={exportLanguage} onChange={(event) => setExportLanguage(event.target.value)}>
-                      <option value="all">All</option>
-                      {languageBreakdown.map((language) => (
-                        <option key={language.label} value={language.label}>{language.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
-                <div className="admin-section-heading">
-                  <h2 style={{ margin: 0, fontSize: "19px" }}>Select columns to export</h2>
-                  <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                    <button type="button" onClick={selectAllExportColumns} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px" }}>Select all</button>
-                    <button type="button" onClick={clearExportColumns} className="admin-action-button" style={{ ...ghostButton, padding: "8px 16px", fontSize: "14px", color: "#7d849f" }}>Clear all</button>
-                  </div>
-                </div>
-                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                <div className="admin-filter-grid" style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "12px" }}>
-                  {exportColumnOptions.map(([key, label]) => {
-                    const checked = exportColumns.includes(key);
-
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => toggleExportColumn(key)}
-                        style={{
-                          minHeight: "64px",
-                          borderRadius: "10px",
-                          border: checked ? "1px solid #a855f7" : "1px solid rgba(122, 73, 255, 0.34)",
-                          background: checked ? "rgba(122, 73, 255, 0.16)" : "rgba(255,255,255,0.025)",
-                          color: checked ? "#f4f0ff" : "#9da6c3",
-                          display: "flex",
-                          gap: "10px",
-                          alignItems: "center",
-                          padding: "12px",
-                          textAlign: "left",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <span style={{ width: "18px", height: "18px", borderRadius: "5px", display: "grid", placeItems: "center", flex: "0 0 auto", background: checked ? "#8b3ff4" : "transparent", border: checked ? "1px solid #8b3ff4" : "1px solid rgba(154, 145, 176, 0.44)", color: "#fff", fontSize: "12px" }}>
-                          {checked ? "✓" : ""}
-                        </span>
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px", overflow: "hidden" }}>
-                <div className="admin-section-heading">
-                  <h2 style={{ margin: 0, fontSize: "19px" }}>Data preview</h2>
-                  <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
-                    {exportRows.length} rows
-                  </span>
-                </div>
-                <div className="admin-scroll" style={{ marginTop: "22px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
-                  <table className="admin-polished-table" style={{ width: "100%", minWidth: "720px", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px", letterSpacing: "0.06em" }}>
-                        {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key, label]) => (
-                          <th key={key} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{label}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exportColumns.length ? exportRows.slice(0, 8).map((item) => {
-                        return (
-                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
-                            {exportColumnOptions.filter(([key]) => exportColumns.includes(key)).map(([key]) => (
-                              <td key={key} style={{ padding: "14px 12px", color: key === "reference_id" ? "#c681ff" : "#aeb5d4" }}>
-                                {exportValueFor(item, key)}
-                              </td>
-                            ))}
-                          </tr>
-                        );
-                      }) : null}
-                      {!exportColumns.length || !exportRows.length ? (
-                        <tr>
-                          <td colSpan={Math.max(exportColumns.length, 1)} style={{ padding: "22px 12px" }}>
-                            <div className="admin-empty-state">
-                              {!exportColumns.length ? "Select at least one column to preview export data." : "No rows match the selected export filters."}
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
-                <div className="admin-section-heading">
-                  <h2 style={{ margin: 0, fontSize: "19px" }}>Export</h2>
-                  <span style={{ padding: "7px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
-                    {exportFormat.toUpperCase()} · {exportRows.length} rows · {exportColumns.length} columns
-                  </span>
-                </div>
-                <div style={{ marginTop: "22px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                
-                {isExporting && (
-                  <div style={{ marginTop: "24px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", color: "#d9b7ff" }}>
-                      <span>Preparing {exportFormat.toUpperCase()} file...</span>
-                      <span>{exportProgress}%</span>
-                    </div>
-                    <div style={{ height: "8px", background: "rgba(255,255,255,0.05)", borderRadius: "10px", overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${exportProgress}%`, background: "linear-gradient(90deg, #7c34f2, #a855f7)", transition: "width 0.3s ease" }} />
-                    </div>
-                  </div>
-                )}
-
-                <div className="admin-export-actions" style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "18px" }}>
-                  <button 
-                    type="button" 
-                    disabled={isExporting}
-                    onClick={() => downloadCustomExport("csv")} 
-                    className="admin-action-button"
-                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1, background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}
-                  >
-                    {isExporting && exportFormat === "csv" ? "Exporting..." : "Download CSV"}
-                  </button>
-                  <button 
-                    type="button" 
-                    disabled={isExporting}
-                    onClick={() => downloadCustomExport("excel")} 
-                    className="admin-action-button"
-                    style={{ ...ghostButton, minHeight: "74px", fontSize: "18px", opacity: isExporting ? 0.5 : 1, background: "rgba(38, 230, 173, 0.08)", borderColor: "rgba(38, 230, 173, 0.28)" }}
-                  >
-                    {isExporting && exportFormat === "excel" ? "Exporting..." : "Download Excel (.xls)"}
-                  </button>
-                </div>
-                {feedback ? <div style={{ marginTop: "16px", color: "#d9b7ff" }}>{feedback}</div> : null}
-              </section>
-
-              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "28px", maxWidth: "930px" }}>
-                <h2 style={{ margin: 0, fontSize: "19px" }}>Recent Export History</h2>
-                <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-                <div style={{ marginTop: "18px" }}>
-                  {exportHistory.length > 0 ? (
-                    <div className="admin-scroll" style={{ overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
-                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "560px", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr style={{ color: "#6d728d", textAlign: "left", fontSize: "13px" }}>
-                          <th style={{ padding: "10px" }}>Time</th>
-                          <th style={{ padding: "10px" }}>Format</th>
-                          <th style={{ padding: "10px" }}>Rows</th>
-                          <th style={{ padding: "10px" }}>Exported By</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {exportHistory.map(h => (
-                          <tr key={h.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                            <td style={{ padding: "10px" }}>{h.time}</td>
-                            <td style={{ padding: "10px", color: "#35e5a7" }}>{h.format}</td>
-                            <td style={{ padding: "10px" }}>{h.rows}</td>
-                            <td style={{ padding: "10px", color: "#d39cff" }}>{h.agent}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    </div>
-                  ) : (
-                    <div className="admin-empty-state">No recent export history</div>
-                  )}
-                </div>
-              </section>
-              </>
-              )} {/* End of isLoadingResponses conditional rendering */}
-            </>
           ) : (
             <>
           <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
@@ -2629,9 +2931,7 @@ const AdminDashboard = () => {
               </div>
             </div>
             <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px" }}>
-              <button type="button" onClick={loadResponses} style={ghostButton}>
-                Filter
-              </button>
+            
               <button type="button" onClick={() => downloadResponsesExport(token)} style={ghostButton}>
                 Export CSV
               </button>
@@ -2663,7 +2963,7 @@ const AdminDashboard = () => {
             ))}
           </section>
 
-          <section className="admin-two-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
+          <section style={{ marginTop: "28px", display: "grid" }}>
             <article style={{ ...panel, padding: "28px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h2 style={{ margin: 0, fontSize: "19px" }}>Call status breakdown</h2>
@@ -2672,101 +2972,101 @@ const AdminDashboard = () => {
                 </span>
               </div>
               <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-              <div style={{ marginTop: "24px", display: "flex", alignItems: "end", gap: "46px", height: "220px", paddingLeft: "70px" }}>
-                <div style={{ width: "140px", height: `${connectedWidth}%`, maxHeight: "190px", minHeight: "32px", borderRadius: "8px", background: "linear-gradient(180deg, #9c4dff, #7c34f2)" }} />
-                <div style={{ width: "140px", height: `${notConnectedWidth}%`, maxHeight: "190px", minHeight: "32px", borderRadius: "8px", background: "#3e485b" }} />
-              </div>
-              <div style={{ display: "flex", gap: "58px", marginLeft: "78px", color: "#666d83", fontWeight: 700 }}>
-                <span>Connected</span>
-                <span>Not Connected</span>
-              </div>
-            </article>
-
-            <article style={{ ...panel, padding: "28px", overflow: "hidden" }}>
-              <h2 style={{ margin: 0, fontSize: "19px" }}>Disposition distribution</h2>
-              <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-              <div style={{ marginTop: "28px", display: "grid", placeItems: "center" }}>
-                <div
-                  style={{
-                    width: "210px",
-                    height: "210px",
-                    borderRadius: "999px",
-                    background: `conic-gradient(#25d8ef 0 ${(analytics.connectedCalls / totalForDonut) * 100}%, #ff717e 0 ${((analytics.connectedCalls + analytics.notConnectedCalls) / totalForDonut) * 100}%, #35e5a7 0 100%)`,
-                    display: "grid",
-                    placeItems: "center",
-                  }}
-                >
-                  <div style={{ width: "112px", height: "112px", borderRadius: "999px", background: "#121027", display: "grid", placeItems: "center", color: "#aeb5d4" }}>
-                    {analytics.totalCalls}
-                  </div>
-                </div>
+              <div className="overview-status-bars">
+                {callStatusBars.map((bar) => {
+                  const height = Math.max((bar.value / maxStatusCalls) * 100, 8);
+                  return (
+                    <div key={bar.label} style={{ minWidth: 0 }}>
+                      <div style={{ height: "220px", display: "flex", alignItems: "end", justifyContent: "center", padding: "0 12px" }}>
+                        <div
+                          title={`${bar.label}: ${bar.value}`}
+                          style={{
+                            width: "100%",
+                            maxWidth: "126px",
+                            height: `${height}%`,
+                            minHeight: "28px",
+                            borderRadius: "12px 12px 8px 8px",
+                            background: bar.color,
+                            boxShadow: `0 18px 36px ${bar.glow}`,
+                          }}
+                        />
+                      </div>
+                      <div style={{ marginTop: "14px", textAlign: "center", minHeight: "58px" }}>
+                        <div style={{ color: "#f4f0ff", fontSize: "15px", fontWeight: 700, lineHeight: 1.25 }}>{bar.label}</div>
+                        <div style={{ marginTop: "6px", color: "#aeb5d4", fontSize: "20px", fontWeight: 800 }}>{bar.value}</div>
+                        <div style={{ marginTop: "4px", color: "#6d728d", fontSize: "12px", lineHeight: 1.25 }}>{bar.note}</div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </article>
           </section>
 
           <section className="admin-two-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "18px" }}>
-            <article style={{ ...panel, padding: "28px" }}>
+            <article className="overview-disposition-card" style={{ ...panel, padding: "28px", overflow: "hidden" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <h2 style={{ margin: 0, fontSize: "19px" }}>Hourly call volume</h2>
+                <h2 style={{ margin: 0, fontSize: "19px" }}>Disposition distribution</h2>
                 <span style={{ padding: "6px 16px", borderRadius: "999px", color: "#c693ff", border: "1px solid rgba(166, 108, 255, 0.44)", background: "rgba(122, 73, 255, 0.16)" }}>
                   Today
                 </span>
               </div>
               <div style={{ marginTop: "20px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
-              <svg viewBox="0 0 560 230" style={{ width: "100%", marginTop: "20px" }}>
-                {/* Y-axis labels and grid lines */}
-                {[0, 1, 2, 3, 4].map((i) => {
-                  const y = 30 + i * 40;
-                  const label = Math.round(maxHourlyCount - (i * maxHourlyCount) / 4);
-                  return (
-                    <React.Fragment key={i}>
-                      <text x="0" y={y + 4} fill="#555c76" fontSize="10" fontWeight="700">{label}</text>
-                      <line x1="35" x2="535" y1={y} y2={y} stroke="rgba(132, 80, 255, 0.18)" />
-                    </React.Fragment>
-                  );
-                })}
-                
-                {/* Area under the line */}
-                <path 
-                  d={(() => {
-                    const pts = hourlyCounts.map((count, i) => ({ x: 40 + i * 49, y: 190 - (count / maxHourlyCount) * 160 }));
-                    if (!pts.length) return "";
-                    let d = `M ${pts[0].x} ${pts[0].y}`;
-                    if (pts.length > 1) {
-                      d += ` C ${pts[0].x + 20} ${pts[0].y} ${pts[1].x - 20} ${pts[1].y} ${pts[1].x} ${pts[1].y}`;
-                      for (let i = 2; i < pts.length; i++) d += ` S ${pts[i].x - 20} ${pts[i].y} ${pts[i].x} ${pts[i].y}`;
-                    }
-                    return d + ` L ${pts[pts.length - 1].x} 190 L ${pts[0].x} 190 Z`;
-                  })()}
-                  fill="rgba(157, 78, 255, 0.12)"
-                />
-                {/* Trend line */}
-                <path
-                  d={(() => {
-                    const pts = hourlyCounts.map((count, i) => ({ x: 40 + i * 49, y: 190 - (count / maxHourlyCount) * 160 }));
-                    if (!pts.length) return "";
-                    let d = `M ${pts[0].x} ${pts[0].y}`;
-                    if (pts.length > 1) {
-                      d += ` C ${pts[0].x + 20} ${pts[0].y} ${pts[1].x - 20} ${pts[1].y} ${pts[1].x} ${pts[1].y}`;
-                      for (let i = 2; i < pts.length; i++) d += ` S ${pts[i].x - 20} ${pts[i].y} ${pts[i].x} ${pts[i].y}`;
-                    }
-                    return d;
-                  })()}
-                  fill="none"
-                  stroke="#a855f7"
-                  strokeWidth="4"
-                />
-                {hourlyCounts.map((count, i) => {
-                  const x = 40 + i * 49;
-                  const y = 190 - (count / maxHourlyCount) * 160;
-                  return <circle key={i} cx={x} cy={y} r="6" fill="#b568ff" />;
-                })}
-                {hourlyLabels.map((label, index) => (
-                  <text key={label} x={35 + index * 49} y="215" fill="#555c76" fontSize="10" fontWeight="700">
-                    {label}
-                  </text>
-                ))}
-              </svg>
+              <div className="overview-disposition-body">
+                <div
+                  style={{
+                    width: "min(100%, 280px)",
+                    aspectRatio: "1",
+                    borderRadius: "999px",
+                    background: dispositionGradient,
+                    display: "grid",
+                    placeItems: "center",
+                    boxShadow: "0 24px 54px rgba(0,0,0,0.28)",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "44%",
+                      aspectRatio: "1",
+                      borderRadius: "999px",
+                      background: "#121027",
+                      display: "grid",
+                      placeItems: "center",
+                      color: "#f4f0ff",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                    }}
+                  >
+                    <div style={{ textAlign: "center", lineHeight: 1.2 }}>
+                      <div style={{ fontSize: "28px", fontWeight: 800 }}>{analytics.totalCalls}</div>
+                      <div style={{ color: "#8f98b7", fontSize: "12px", fontWeight: 700 }}>TOTAL</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gap: "12px", width: "100%" }}>
+                  {dispositionSegments.length ? (
+                    dispositionSegments.map((item) => (
+                      <div key={item.label} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "14px", alignItems: "center" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: "flex", gap: "10px", alignItems: "center", color: "#f4f0ff", fontWeight: 700 }}>
+                            <span style={{ width: "10px", height: "10px", borderRadius: "999px", background: item.color, flex: "0 0 auto" }} />
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                          </div>
+                          <div style={{ marginTop: "8px", height: "8px", borderRadius: "999px", background: "rgba(132, 80, 255, 0.16)", overflow: "hidden" }}>
+                            <div style={{ width: `${Math.max(item.percent, 4)}%`, height: "100%", borderRadius: "999px", background: item.color }} />
+                          </div>
+                        </div>
+                        <div style={{ color: "#aeb5d4", fontWeight: 800, textAlign: "right" }}>
+                          {item.value}
+                          <div style={{ color: "#6d728d", fontSize: "12px", fontWeight: 700 }}>{item.percent}%</div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ color: "#8f98b7" }}>No disposition data yet.</div>
+                  )}
+                </div>
+              </div>
             </article>
 
             <article style={{ ...panel, padding: "28px" }}>
@@ -2920,6 +3220,38 @@ const AdminDashboard = () => {
         </div>
       ) : null}
 
+      {forceLogoutTarget ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "20px", background: "rgba(4, 3, 9, 0.72)" }}>
+          <div style={{ ...panel, width: "100%", maxWidth: "470px", padding: "26px", boxShadow: "0 28px 80px rgba(0,0,0,0.45)" }}>
+            <h2 style={{ margin: 0, fontSize: "22px" }}>Are you sure?</h2>
+            <div style={{ marginTop: "12px", color: "#aeb5d4", lineHeight: 1.5 }}>
+              {forceLogoutTarget.type === "all"
+                ? "This will force logout all currently active agents. Your admin session will stay active."
+                : `This will force logout ${forceLogoutTarget.agent.name} and close any active break safely.`}
+            </div>
+            <div style={{ marginTop: "22px", display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+              <button type="button" onClick={closeAgentModal} disabled={isAgentActionLoading} style={{ ...ghostButton, opacity: isAgentActionLoading ? 0.55 : 1 }}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleForceLogout}
+                disabled={isAgentActionLoading}
+                style={{
+                  ...ghostButton,
+                  color: "#ffb45c",
+                  borderColor: "rgba(255, 180, 92, 0.42)",
+                  background: "rgba(255, 180, 92, 0.1)",
+                  opacity: isAgentActionLoading ? 0.55 : 1,
+                }}
+              >
+                {isAgentActionLoading ? "Logging out..." : "Force Logout"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {isLogoutConfirmationOpen ? (
         <LogoutConfirmationModal onCancel={closeLogoutConfirmation} onConfirm={handleLogout} />
       ) : null}
@@ -2928,3 +3260,4 @@ const AdminDashboard = () => {
 };
 
 export default AdminDashboard;
+

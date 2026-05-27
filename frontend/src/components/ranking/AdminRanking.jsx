@@ -171,7 +171,7 @@ const AdminRanking = ({ token }) => {
         <div>
           <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Agent Ranking</h1>
           <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
-            Score = positive x 10 + connected x 4 + total calls
+            Score = positive x 5 + connected x 3 + total calls x 2
           </div>
         </div>
       </div>

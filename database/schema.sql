@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   login_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   logout_time TIMESTAMP,
   break_start_time TIMESTAMP,
+  break_end_time TIMESTAMP,
+  break_reason VARCHAR(80),
+  break_remark TEXT,
   total_break_duration INTEGER NOT NULL DEFAULT 0,
   break_count INTEGER NOT NULL DEFAULT 0,
   status VARCHAR(20) NOT NULL DEFAULT 'online',
@@ -30,11 +33,37 @@ ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS user_id INTEGER;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS login_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS logout_time TIMESTAMP;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS break_start_time TIMESTAMP;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS break_end_time TIMESTAMP;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS break_reason VARCHAR(80);
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS break_remark TEXT;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS total_break_duration INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS break_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'online';
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE TABLE IF NOT EXISTS agent_breaks (
+  id SERIAL PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  break_start_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  break_end_time TIMESTAMP,
+  break_reason VARCHAR(80),
+  break_remark TEXT,
+  total_break_duration INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS session_id INTEGER;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS user_id INTEGER;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS break_start_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS break_end_time TIMESTAMP;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS break_reason VARCHAR(80);
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS break_remark TEXT;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS total_break_duration INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS responses (
   id SERIAL PRIMARY KEY,
@@ -115,6 +144,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_active_status_login
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_login
   ON agent_sessions (user_id, login_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_agent_breaks_session_open
+  ON agent_breaks (session_id, break_end_time);
+
+CREATE INDEX IF NOT EXISTS idx_agent_breaks_user_start
+  ON agent_breaks (user_id, break_start_time DESC);
 
 DO $$
 BEGIN

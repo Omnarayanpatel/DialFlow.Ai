@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import LogoutConfirmationModal from "../../components/common/LogoutConfirmationModal";
 import ThemeToggle from "../../components/common/ThemeToggle";
 import AgentRanking from "../../components/ranking/AgentRanking";
-import { updateUserStatus } from "../../services/authService";
-import { createAgentResponse, getAgentDashboardData } from "../../services/responseService";
+import { clearAgentSessionCache, updateUserStatus } from "../../services/authService";
+import { createAgentResponse, getAgentDashboardData, updateAgentHistoryEntry } from "../../services/responseService";
 import { useStore } from "../../store/useStore";
 import { useTheme } from "../../theme/useTheme";
 
@@ -72,6 +72,9 @@ const languageOptions = [
   "Other",
 ];
 
+const breakReasonOptions = ["Lunch Break", "Tea Break", "Bio Break", "Session"];
+const breakReasonsWithRemark = new Set(["Session"]);
+
 const fallbackSummary = {
   totalCalls: 0,
   connectedCalls: 0,
@@ -84,14 +87,24 @@ const fallbackRows = [];
 const fallbackSession = {
   callsThisSession: 0,
   loginTime: null,
+  totalLoginDuration: 0,
+  totalLoginDurationToday: 0,
+  total_login_time: 0,
   activeSessionDuration: 0,
   breakCountToday: 0,
   totalBreakDurationToday: 0,
+  total_break_time: 0,
+  staffTimeToday: 0,
+  staff_time: 0,
   currentBreakDuration: 0,
+  current_break_status: "none",
   activeSessionCount: 0,
+  breakReason: "",
+  breakRemark: "",
+  breakStartTime: null,
+  breakEndTime: null,
   status: "offline",
   serverTime: null,
-  syncedAt: 0,
 };
 
 const shell = {
@@ -119,6 +132,16 @@ const fieldBase = {
   fontSize: "18px",
   outline: "none",
   boxSizing: "border-box",
+};
+
+const modalButton = {
+  padding: "12px 18px",
+  borderRadius: "12px",
+  border: "1px solid rgba(166, 108, 255, 0.34)",
+  background: "transparent",
+  color: "#f5f1ff",
+  cursor: "pointer",
+  fontSize: "15px",
 };
 
 const statusTone = (value) => {
@@ -172,6 +195,8 @@ const formatDuration = (seconds) => {
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 };
 
+const toSeconds = (value) => Math.max(Number.parseInt(value, 10) || 0, 0);
+
 const formatTime = (date) => {
   if (!date) {
     return "NA";
@@ -216,6 +241,14 @@ const normalizeRecords = (records) =>
     disposition: item.disposition || "NA",
     subDisposition: item.sub_disposition || "NA",
   }));
+
+const toHistoryEditForm = (record = {}) => ({
+  callStatus: normalizeCallStatus(record.call_status) === "NA" ? "Not Connected" : normalizeCallStatus(record.call_status),
+  disposition: record.disposition || "RNR",
+  subDisposition: record.sub_disposition || "NA",
+  language: record.language || "NA",
+  languageOther: record.language_other || "",
+});
 
 const iconFor = (type) => {
   if (type === "grid") {
@@ -304,7 +337,6 @@ const Dashboard = () => {
   const { theme, toggleTheme } = useTheme();
   const [activeView, setActiveView] = useState("dashboard");
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [liveSeconds, setLiveSeconds] = useState(0);
   const [dashboardSyncKey, setDashboardSyncKey] = useState(0);
 
   // Session-based Agent Info state (to be filled once upon login)
@@ -314,6 +346,10 @@ const Dashboard = () => {
   const [dialerId, setDialerId] = useState(user.dialerId || "");
   const [isInfoLocked, setIsInfoLocked] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [isBreakModalOpen, setIsBreakModalOpen] = useState(false);
+  const [breakReason, setBreakReason] = useState("Lunch Break");
+  const [breakRemark, setBreakRemark] = useState("");
+  const [breakSaving, setBreakSaving] = useState(false);
 
   const [referenceId, setReferenceId] = useState("");
   const [callStatus, setCallStatus] = useState("Not Connected");
@@ -324,9 +360,9 @@ const Dashboard = () => {
   const [dispositionOther, setDispositionOther] = useState("");
   const [subDisposition, setSubDisposition] = useState("NA");
   const [subDispositionOther, setSubDispositionOther] = useState("");
-  const [notes, setNotes] = useState("");
   const [summary, setSummary] = useState(fallbackSummary);
   const [sessionStats, setSessionStats] = useState(fallbackSession);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [rows, setRows] = useState(fallbackRows);
   const [historyRecords, setHistoryRecords] = useState([]);
   const [historyPagination, setHistoryPagination] = useState({
@@ -343,13 +379,36 @@ const Dashboard = () => {
   });
   const [historyLoading, setHistoryLoading] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [historyEditTarget, setHistoryEditTarget] = useState(null);
+  const [historyEditForm, setHistoryEditForm] = useState(toHistoryEditForm());
+  const [historyEditSaving, setHistoryEditSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const clockIntervalRef = useRef(null);
+  const dashboardSyncIntervalRef = useRef(null);
 
   useEffect(() => {
     document.title = "Agent Dashboard | Dialflow.ai";
   }, []);
+
+  const resetDashboardSessionState = () => {
+    setSessionStats(fallbackSession);
+    setSummary(fallbackSummary);
+    setRows(fallbackRows);
+    setHistoryRecords([]);
+    setHistoryPagination({
+      page: 1,
+      pageSize: 10,
+      total: 0,
+      totalPages: 1,
+    });
+    setIsPaused(false);
+    setIsBreakModalOpen(false);
+    setBreakReason("Lunch Break");
+    setBreakRemark("");
+    setIsSessionHydrated(false);
+  };
 
   const showDisposition = true;
   const subDispositionOptions = useMemo(
@@ -361,33 +420,73 @@ const Dashboard = () => {
   const showOtherDisposition = disposition === "Other";
   const showOtherSubDisposition = subDisposition === "Other";
   const showOtherCallStatus = callStatus === "Other";
+  const historyEditSubDispositionOptions = useMemo(
+    () => (subDispositionMap[historyEditForm.disposition] ? subDispositionMap[historyEditForm.disposition] : ["NA"]),
+    [historyEditForm.disposition]
+  );
+  const historyEditShowSubDisposition = Object.prototype.hasOwnProperty.call(subDispositionMap, historyEditForm.disposition);
+  const historyEditShowOtherLanguage = historyEditForm.language === "Other";
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
+    clockIntervalRef.current = window.setInterval(() => {
       setCurrentTime(new Date());
-      setLiveSeconds(Math.floor(performance.now() / 1000));
     }, 1000);
 
     return () => {
-      window.clearInterval(intervalId);
+      if (clockIntervalRef.current) {
+        window.clearInterval(clockIntervalRef.current);
+        clockIntervalRef.current = null;
+      }
     };
   }, []);
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
+    dashboardSyncIntervalRef.current = window.setInterval(() => {
       setDashboardSyncKey((current) => current + 1);
-    }, 30000);
+    }, 5000);
 
     return () => {
-      window.clearInterval(intervalId);
+      if (dashboardSyncIntervalRef.current) {
+        window.clearInterval(dashboardSyncIntervalRef.current);
+        dashboardSyncIntervalRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const requestBackendSync = () => {
+      setDashboardSyncKey((current) => current + 1);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        requestBackendSync();
+      }
+    };
+
+    window.addEventListener("online", requestBackendSync);
+    window.addEventListener("focus", requestBackendSync);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("online", requestBackendSync);
+      window.removeEventListener("focus", requestBackendSync);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    clearAgentSessionCache();
+    resetDashboardSessionState();
+    setDashboardSyncKey((current) => current + 1);
+  }, [token, user.id, user.employeeId]);
 
   useEffect(() => {
     let ignore = false;
 
     const loadDashboard = async () => {
       if (!token) {
+        resetDashboardSessionState();
         return;
       }
 
@@ -419,16 +518,27 @@ const Dashboard = () => {
         const nextSession = {
           ...fallbackSession,
           ...(data.session || {}),
-          syncedAt: performance.now(),
+          syncedAtMs: Date.now(),
         };
+
+        if (nextSession.status === "offline") {
+          resetDashboardSessionState();
+          clearAgentSessionCache({ clearAuth: true });
+          window.location.assign("/login");
+          return;
+        }
+
         setSessionStats(nextSession);
         setIsPaused(nextSession.status === "break");
+        setIsSessionHydrated(true);
       } catch (_error) {
         if (!ignore) {
           setRows(fallbackRows);
           setHistoryRecords([]);
           setSummary(fallbackSummary);
           setSessionStats(fallbackSession);
+          setIsPaused(false);
+          setIsSessionHydrated(false);
         }
       } finally {
         if (!ignore) {
@@ -463,24 +573,35 @@ const Dashboard = () => {
     setDispositionOther("");
     setSubDisposition("NA");
     setSubDispositionOther("");
-    setNotes("");
   };
 
-  const syncStatus = async (status) => {
+  const syncStatus = async (status, breakDetails = {}) => {
     try {
-      await updateUserStatus(status, token);
+      await updateUserStatus(status, token, breakDetails);
     } catch (err) {
       console.error("Failed to sync status:", err);
+      throw err;
     }
   };
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
-    await syncStatus("Offline");
-    sessionStorage.removeItem("agentLoginTime");
-    sessionStorage.removeItem("agentWorkDuration");
-    localStorage.clear();
-    window.location.reload();
+    resetDashboardSessionState();
+    if (clockIntervalRef.current) {
+      window.clearInterval(clockIntervalRef.current);
+      clockIntervalRef.current = null;
+    }
+    if (dashboardSyncIntervalRef.current) {
+      window.clearInterval(dashboardSyncIntervalRef.current);
+      dashboardSyncIntervalRef.current = null;
+    }
+    try {
+      await syncStatus("Offline");
+    } catch (_error) {
+      console.error("Logout status sync failed");
+    }
+    clearAgentSessionCache({ clearAuth: true });
+    window.location.replace("/login");
   };
 
   const openLogoutConfirmation = () => {
@@ -498,28 +619,69 @@ const Dashboard = () => {
   const effectiveCallStatus = showOtherCallStatus ? callStatusOther || "Other" : callStatus;
   const effectiveDisposition = showOtherDisposition ? dispositionOther || "Other" : disposition;
   const effectiveSubDisposition = showOtherSubDisposition ? subDispositionOther || "Other" : subDisposition;
-  const secondsSinceSessionSync = sessionStats.syncedAt
-    ? Math.max(liveSeconds - Math.floor(sessionStats.syncedAt / 1000), 0)
-    : 0;
-  const liveSessionDuration =
-    sessionStats.status === "online"
-      ? sessionStats.activeSessionDuration + secondsSinceSessionSync
-      : sessionStats.activeSessionDuration;
-  const liveCurrentBreakDuration =
-    sessionStats.status === "break"
-      ? sessionStats.currentBreakDuration + secondsSinceSessionSync
+  const displayedSession = isSessionHydrated ? sessionStats : fallbackSession;
+  const serverTotalLoginDurationToday = displayedSession.total_login_time ?? displayedSession.totalLoginDurationToday;
+  const serverTotalBreakDurationToday = displayedSession.total_break_time ?? displayedSession.totalBreakDurationToday;
+  const serverStaffTimeToday = displayedSession.staff_time ?? displayedSession.staffTimeToday;
+  const serverCurrentBreakDuration = displayedSession.currentBreakDuration;
+  const currentBreakStatus = displayedSession.current_break_status || (displayedSession.status === "break" ? "break" : "none");
+  const sessionLoginTime = displayedSession.loginTime ? new Date(displayedSession.loginTime) : null;
+  const secondsSinceBackendSync =
+    isSessionHydrated && displayedSession.syncedAtMs
+      ? Math.max(Math.floor((currentTime.getTime() - displayedSession.syncedAtMs) / 1000), 0)
       : 0;
-  const liveTotalBreakDurationToday =
-    sessionStats.status === "break"
-      ? sessionStats.totalBreakDurationToday + secondsSinceSessionSync
-      : sessionStats.totalBreakDurationToday;
-  const sessionLoginTime = sessionStats.loginTime ? new Date(sessionStats.loginTime) : null;
+  const isActiveSession = displayedSession.status === "online" || displayedSession.status === "break";
+  const isOnBreak = displayedSession.status === "break" || currentBreakStatus === "break";
+  const visualTotalLoginDurationToday = toSeconds(serverTotalLoginDurationToday) + (displayedSession.status === "online" ? secondsSinceBackendSync : 0);
+  const visualTotalBreakDurationToday = toSeconds(serverTotalBreakDurationToday) + (isOnBreak ? secondsSinceBackendSync : 0);
+  const visualStaffTimeToday = toSeconds(serverStaffTimeToday) + (isActiveSession ? secondsSinceBackendSync : 0);
+  const visualCurrentBreakDuration = toSeconds(serverCurrentBreakDuration) + (isOnBreak ? secondsSinceBackendSync : 0);
 
   const handleTogglePause = async () => {
-    const nextState = !isPaused;
-    setIsPaused(nextState);
-    await syncStatus(nextState ? "On break" : "Online");
-    setDashboardSyncKey((current) => current + 1);
+    if (!isPaused) {
+      setBreakReason("Lunch Break");
+      setBreakRemark("");
+      setIsBreakModalOpen(true);
+      return;
+    }
+
+    try {
+      await syncStatus("Online");
+      setDashboardSyncKey((current) => current + 1);
+    } catch (_error) {
+      setFeedback("Unable to end break. Please try again.");
+    }
+  };
+
+  const closeBreakModal = () => {
+    if (breakSaving) {
+      return;
+    }
+
+    setIsBreakModalOpen(false);
+  };
+
+  const confirmBreak = async () => {
+    if (!breakReason) {
+      setFeedback("Please select a break reason.");
+      return;
+    }
+
+    setBreakSaving(true);
+    setFeedback("");
+
+    try {
+      await syncStatus("On break", {
+        breakReason,
+        breakRemark: breakReasonsWithRemark.has(breakReason) ? breakRemark : "",
+      });
+      setIsBreakModalOpen(false);
+      setDashboardSyncKey((current) => current + 1);
+    } catch (_error) {
+      setFeedback("Unable to start break. Please try again.");
+    } finally {
+      setBreakSaving(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -528,7 +690,7 @@ const Dashboard = () => {
       return;
     }
 
-    if (isPaused) {
+    if (displayedSession.status === "break") {
       setFeedback("You are currently on break. Please go Online to submit responses.");
       return;
     }
@@ -552,7 +714,6 @@ const Dashboard = () => {
           subDisposition: showDisposition && showSubDisposition ? effectiveSubDisposition : "NA",
           language: showOtherLanguage ? "Other" : language,
           languageOther: showOtherLanguage ? languageOther : "",
-          remark: notes,
         },
         token
       );
@@ -622,6 +783,73 @@ const Dashboard = () => {
     }
   };
 
+  const openHistoryEdit = (record) => {
+    if (!record?.is_editable) {
+      return;
+    }
+
+    setHistoryEditTarget(record);
+    setHistoryEditForm(toHistoryEditForm(record));
+    setFeedback("");
+  };
+
+  const closeHistoryEdit = () => {
+    if (historyEditSaving) {
+      return;
+    }
+
+    setHistoryEditTarget(null);
+    setHistoryEditForm(toHistoryEditForm());
+  };
+
+  const handleHistoryEditSave = async (event) => {
+    event.preventDefault();
+
+    if (!historyEditTarget || !token) {
+      return;
+    }
+
+    setHistoryEditSaving(true);
+    setFeedback("");
+
+    try {
+      const updated = await updateAgentHistoryEntry(
+        historyEditTarget.id,
+        {
+          callStatus: historyEditForm.callStatus,
+          disposition: historyEditForm.disposition,
+          subDisposition: historyEditShowSubDisposition ? historyEditForm.subDisposition : "NA",
+          language: historyEditForm.language,
+          languageOther: historyEditShowOtherLanguage ? historyEditForm.languageOther : "",
+        },
+        token
+      );
+
+      setHistoryRecords((current) =>
+        current.map((record) => (record.id === updated.id ? { ...record, ...updated } : record))
+      );
+      setRows((current) =>
+        current.map((record) =>
+          record.refId === (updated.reference_id || `REF-${updated.id}`)
+            ? {
+                refId: updated.reference_id || `REF-${updated.id}`,
+                status: normalizeCallStatus(updated.call_status),
+                disposition: updated.disposition || "NA",
+                subDisposition: updated.sub_disposition || "NA",
+              }
+            : record
+        )
+      );
+      setFeedback("History entry updated successfully.");
+      setHistoryEditTarget(null);
+      setDashboardSyncKey((current) => current + 1);
+    } catch (error) {
+      setFeedback(error.message || "Unable to update history entry.");
+    } finally {
+      setHistoryEditSaving(false);
+    }
+  };
+
   const historyRowsWithSections = historyRecords.flatMap((item, index) => {
     const currentGroup = item.history_group || "older";
     const previousGroup = historyRecords[index - 1]?.history_group || null;
@@ -630,6 +858,54 @@ const Dashboard = () => {
       ? [{ type: "section", id: `section-${currentGroup}-${index}`, label: historyGroupLabel(currentGroup) }, item]
       : [item];
   });
+  const isLightTheme = theme === "light";
+  const breakModalTheme = isLightTheme
+    ? {
+        overlay: "rgba(83, 62, 124, 0.18)",
+        cardBg: "linear-gradient(180deg, #ffffff 0%, #f8f5ff 100%)",
+        border: "1px solid rgba(128, 90, 213, 0.22)",
+        shadow: "0 22px 58px rgba(80, 59, 130, 0.18)",
+        heading: "#211833",
+        secondary: "#6f6680",
+        selectedBg: "rgba(255, 180, 92, 0.22)",
+        selectedBorder: "1px solid rgba(210, 126, 34, 0.58)",
+        selectedText: "#7a3f00",
+        optionBg: "#ffffff",
+        optionBorder: "1px solid rgba(128, 90, 213, 0.22)",
+        optionText: "#2f2542",
+        inputBg: "#ffffff",
+        inputBorder: "1px solid rgba(128, 90, 213, 0.26)",
+        inputText: "#241a35",
+        cancelBg: "#ffffff",
+        cancelBorder: "1px solid rgba(128, 90, 213, 0.28)",
+        cancelText: "#3a2b55",
+        confirmBg: "rgba(255, 180, 92, 0.22)",
+        confirmBorder: "rgba(210, 126, 34, 0.5)",
+        confirmText: "#7a3f00",
+      }
+    : {
+        overlay: "rgba(4, 3, 9, 0.72)",
+        cardBg: panel.background,
+        border: panel.border,
+        shadow: "0 28px 80px rgba(0,0,0,0.45)",
+        heading: "#f5f1ff",
+        secondary: "#8d86aa",
+        selectedBg: "rgba(255, 180, 92, 0.16)",
+        selectedBorder: "1px solid rgba(255, 180, 92, 0.72)",
+        selectedText: "#ffcf8a",
+        optionBg: "rgba(255,255,255,0.03)",
+        optionBorder: "1px solid rgba(166, 108, 255, 0.28)",
+        optionText: "#f5f1ff",
+        inputBg: fieldBase.background,
+        inputBorder: fieldBase.border,
+        inputText: fieldBase.color,
+        cancelBg: modalButton.background,
+        cancelBorder: modalButton.border,
+        cancelText: modalButton.color,
+        confirmBg: "rgba(255, 180, 92, 0.16)",
+        confirmBorder: "rgba(255, 180, 92, 0.48)",
+        confirmText: "#ffcf8a",
+      };
 
   return (
     <div className="crm-theme-root" data-theme={theme} style={shell}>
@@ -669,7 +945,7 @@ const Dashboard = () => {
           }
 
           .agent-summary-grid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(180px, 1fr));
           }
 
           .agent-form-grid {
@@ -691,6 +967,18 @@ const Dashboard = () => {
             -webkit-overflow-scrolling: touch;
           }
 
+          .history-edit-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+          }
+
+          .break-reason-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+          }
+
           @media (max-width: 1180px) {
             .agent-shell-grid {
               grid-template-columns: 1fr;
@@ -706,7 +994,9 @@ const Dashboard = () => {
 
             .agent-form-grid,
             .agent-call-grid,
-            .history-filter-grid {
+            .history-filter-grid,
+            .history-edit-grid,
+            .break-reason-grid {
               grid-template-columns: repeat(2, minmax(0, 1fr));
             }
           }
@@ -719,7 +1009,9 @@ const Dashboard = () => {
             .agent-summary-grid,
             .agent-form-grid,
             .agent-call-grid,
-            .history-filter-grid {
+            .history-filter-grid,
+            .history-edit-grid,
+            .break-reason-grid {
               grid-template-columns: 1fr;
             }
           }
@@ -828,7 +1120,7 @@ const Dashboard = () => {
                     cursor: "pointer",
                     transition: "all 0.2s ease",
                   }}
-                  title={isPaused ? "Go Online" : "Go Offline (Pause)"}
+                  title={isPaused ? "Go Online" : "Start Break"}
                 >
                   <div 
                     style={{
@@ -844,6 +1136,14 @@ const Dashboard = () => {
                   />
                 </div>
               </div>
+              {isPaused && displayedSession.breakReason ? (
+                <div style={{ marginTop: "12px", color: "#ffcf8a", fontSize: "14px", lineHeight: 1.4 }}>
+                  {displayedSession.breakReason}
+                  {displayedSession.breakRemark ? (
+                    <span style={{ color: "#8f86ac" }}> | {displayedSession.breakRemark}</span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -989,7 +1289,7 @@ const Dashboard = () => {
               </div>
 
               <div className="history-table-wrap" style={{ marginTop: "24px" }}>
-                <table style={{ width: "100%", minWidth: "1050px", borderCollapse: "collapse" }}>
+                <table style={{ width: "100%", minWidth: "1040px", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ color: "#8d86aa", textAlign: "left", fontSize: "14px" }}>
                       {[
@@ -1001,7 +1301,7 @@ const Dashboard = () => {
                         "Disposition",
                         "Sub-Disposition",
                         "Language",
-                        "Remark",
+                        "Action",
                       ].map((heading) => (
                         <th key={heading} style={{ padding: "14px 12px", borderBottom: "1px solid rgba(114, 74, 246, 0.22)" }}>
                           {heading}
@@ -1057,7 +1357,26 @@ const Dashboard = () => {
                             <td style={{ padding: "16px 12px" }}>
                               {item.language === "Other" ? item.language_other || "Other" : item.language || "NA"}
                             </td>
-                            <td style={{ padding: "16px 12px", color: "#c8c1df" }}>{item.remark || "-"}</td>
+                            <td style={{ padding: "16px 12px" }}>
+                              {item.is_editable ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openHistoryEdit(item)}
+                                  style={{
+                                    padding: "7px 13px",
+                                    borderRadius: "10px",
+                                    border: "1px solid rgba(166, 108, 255, 0.34)",
+                                    background: "rgba(122, 73, 255, 0.14)",
+                                    color: "#f5f1ff",
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                              ) : (
+                                <span style={{ color: "#716b88" }}>Locked</span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })
@@ -1171,7 +1490,7 @@ const Dashboard = () => {
                 fontSize: "16px",
               }}
             >
-              Login: {formatTime(sessionLoginTime)} | Work Time: {formatDuration(liveSessionDuration)}
+              Login: {formatTime(sessionLoginTime)} | Staff Time: {formatDuration(visualStaffTimeToday)}
             </div>
           </div>
 
@@ -1195,14 +1514,13 @@ const Dashboard = () => {
               {
                 title: "TODAY'S POSITIVE",
                 value: summary.positiveCalls,
-                note: `${summary.totalCalls ? Math.round((summary.positiveCalls / summary.totalCalls) * 100) : 0}% conversion`,
+                note: `${summary.connectedCalls ? Math.round((summary.positiveCalls / summary.connectedCalls) * 100) : 0}% conversion`,
                 accent: "#54ebb2",
               },
-              { title: "CALLS THIS SESSION", value: sessionStats.callsThisSession, note: "Since login", accent: "#ffd166" },
-              { title: "SESSION DURATION", value: formatDuration(liveSessionDuration), note: `Server synced\nLogin ${formatTime(sessionLoginTime)}`, accent: "#9bdcff" },
-              { title: "CURRENT BREAK", value: formatDuration(liveCurrentBreakDuration), note: sessionStats.status === "break" ? "Live break timer" : "Not on break", accent: "#ffb45c" },
-              { title: "BREAK TIME TODAY", value: formatDuration(liveTotalBreakDurationToday), note: "Server total", accent: "#ffa500" },
-              { title: "BREAK COUNT TODAY", value: sessionStats.breakCountToday, note: `${sessionStats.activeSessionCount || 0} active session${sessionStats.activeSessionCount === 1 ? "" : "s"}`, accent: "#ff7a85" },
+              { title: "STAFF TIME", value: formatDuration(visualStaffTimeToday), note: `9h shift target\nLogin ${formatTime(sessionLoginTime)}`, accent: "#9bdcff" },
+              { title: "TOTAL LOGIN TIME", value: formatDuration(visualTotalLoginDurationToday), note: "Server-calculated time", accent: "#54ebb2" },
+              { title: "BREAK TIME", value: formatDuration(visualTotalBreakDurationToday), note: currentBreakStatus === "break" ? `Current ${formatDuration(visualCurrentBreakDuration)}` : "Server total", accent: "#ffa500" },
+              { title: "BREAK COUNT TODAY", value: displayedSession.breakCountToday, note: `${displayedSession.activeSessionCount || 0} active session${displayedSession.activeSessionCount === 1 ? "" : "s"}`, accent: "#ff7a85" },
             ].map((item) => (
               <article style={{ ...panel, padding: "22px 24px" }} key={item.title}>
                 <div style={{ fontSize: "16px", color: "#a9a1c3", lineHeight: 1.1, maxWidth: "120px" }}>
@@ -1454,21 +1772,6 @@ const Dashboard = () => {
               </div>
             ) : null}
 
-            <div style={{ marginTop: "20px" }}>
-              <div style={{ fontSize: "16px", color: "#a7a0be", marginBottom: "10px" }}>REMARK</div>
-              <textarea
-                className="crm-textarea"
-                style={{
-                  ...fieldBase,
-                  minHeight: "138px",
-                  resize: "none",
-                }}
-                placeholder="Optional notes about the call..."
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-              />
-            </div>
-
             {feedback ? (
               <div style={{ marginTop: "14px", color: "#d9b7ff", fontSize: "15px" }}>{feedback}</div>
             ) : null}
@@ -1590,8 +1893,206 @@ const Dashboard = () => {
         </main>
       </div>
 
+      {isBreakModalOpen ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "18px", background: breakModalTheme.overlay }}>
+          <div
+            style={{
+              ...panel,
+              width: "100%",
+              maxWidth: "460px",
+              padding: "26px",
+              background: breakModalTheme.cardBg,
+              border: breakModalTheme.border,
+              boxShadow: breakModalTheme.shadow,
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "22px", color: breakModalTheme.heading }}>Start Break</h2>
+            <div style={{ marginTop: "10px", color: breakModalTheme.secondary, fontSize: "14px", lineHeight: 1.45 }}>
+              Select a reason before your break timer starts.
+            </div>
+
+            <div className="break-reason-grid" style={{ marginTop: "20px" }}>
+              {breakReasonOptions.map((option) => {
+                const selected = breakReason === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => {
+                      setBreakReason(option);
+                      if (!breakReasonsWithRemark.has(option)) {
+                        setBreakRemark("");
+                      }
+                    }}
+                    style={{
+                      padding: "14px 15px",
+                      borderRadius: "14px",
+                      border: selected ? breakModalTheme.selectedBorder : breakModalTheme.optionBorder,
+                      background: selected ? breakModalTheme.selectedBg : breakModalTheme.optionBg,
+                      color: selected ? breakModalTheme.selectedText : breakModalTheme.optionText,
+                      cursor: "pointer",
+                      fontSize: "15px",
+                      fontWeight: 700,
+                      textAlign: "left",
+                      boxShadow: selected && isLightTheme ? "0 8px 18px rgba(210, 126, 34, 0.12)" : "none",
+                    }}
+                  >
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+
+            {breakReasonsWithRemark.has(breakReason) ? (
+              <textarea
+                className="crm-textarea"
+                style={{
+                  ...fieldBase,
+                  marginTop: "16px",
+                  minHeight: "100px",
+                  resize: "none",
+                  fontSize: "15px",
+                  padding: "13px 14px",
+                  background: breakModalTheme.inputBg,
+                  border: breakModalTheme.inputBorder,
+                  color: breakModalTheme.inputText,
+                }}
+                placeholder="Session details"
+                value={breakRemark}
+                maxLength={500}
+                onChange={(event) => setBreakRemark(event.target.value)}
+              />
+            ) : null}
+
+            <div style={{ marginTop: "22px", display: "flex", justifyContent: "flex-end", gap: "12px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={closeBreakModal}
+                disabled={breakSaving}
+                style={{
+                  ...modalButton,
+                  background: breakModalTheme.cancelBg,
+                  border: breakModalTheme.cancelBorder,
+                  color: breakModalTheme.cancelText,
+                  opacity: breakSaving ? 0.55 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmBreak}
+                disabled={breakSaving}
+                style={{
+                  ...modalButton,
+                  background: breakModalTheme.confirmBg,
+                  borderColor: breakModalTheme.confirmBorder,
+                  color: breakModalTheme.confirmText,
+                  opacity: breakSaving ? 0.55 : 1,
+                }}
+              >
+                {breakSaving ? "Starting..." : "Confirm Break"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {isLogoutConfirmationOpen ? (
         <LogoutConfirmationModal onCancel={closeLogoutConfirmation} onConfirm={handleLogout} isLoggingOut={isLoggingOut} />
+      ) : null}
+
+      {historyEditTarget ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "20px", background: "rgba(4, 3, 9, 0.72)" }}>
+          <form onSubmit={handleHistoryEditSave} style={{ ...panel, width: "100%", maxWidth: "620px", padding: "26px", display: "grid", gap: "14px", boxShadow: "0 28px 80px rgba(0,0,0,0.45)" }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: "22px" }}>Edit history entry</h2>
+              <div style={{ marginTop: "8px", color: "#8d86aa", fontSize: "14px" }}>
+                {historyEditTarget.reference_id || `REF-${historyEditTarget.id}`}
+              </div>
+            </div>
+
+            <div className="history-edit-grid">
+              <select
+                className="crm-select"
+                style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                value={historyEditForm.callStatus}
+                onChange={(event) => setHistoryEditForm((current) => ({ ...current, callStatus: event.target.value }))}
+              >
+                {callStatusOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <select
+                className="crm-select"
+                style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                value={historyEditForm.disposition}
+                onChange={(event) =>
+                  setHistoryEditForm((current) => ({
+                    ...current,
+                    disposition: event.target.value,
+                    subDisposition: subDispositionMap[event.target.value] ? "NA" : "NA",
+                  }))
+                }
+              >
+                {dispositionOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <select
+                className="crm-select"
+                disabled={!historyEditShowSubDisposition}
+                style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px", opacity: historyEditShowSubDisposition ? 1 : 0.62 }}
+                value={historyEditShowSubDisposition ? historyEditForm.subDisposition : "NA"}
+                onChange={(event) => setHistoryEditForm((current) => ({ ...current, subDisposition: event.target.value }))}
+              >
+                {historyEditSubDispositionOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <select
+                className="crm-select"
+                style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                value={historyEditForm.language}
+                onChange={(event) => setHistoryEditForm((current) => ({ ...current, language: event.target.value }))}
+              >
+                {languageOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            {historyEditShowOtherLanguage ? (
+              <input
+                className="crm-input"
+                style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                placeholder="Enter language"
+                value={historyEditForm.languageOther}
+                onChange={(event) => setHistoryEditForm((current) => ({ ...current, languageOther: event.target.value }))}
+              />
+            ) : null}
+
+            {feedback ? <div style={{ color: feedback.toLowerCase().includes("success") ? "#54ebb2" : "#ff9aa7", fontSize: "14px" }}>{feedback}</div> : null}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={closeHistoryEdit}
+                disabled={historyEditSaving}
+                style={{ ...modalButton, opacity: historyEditSaving ? 0.55 : 1 }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={historyEditSaving}
+                style={{ ...modalButton, background: "rgba(122, 73, 255, 0.18)", borderColor: "rgba(166, 108, 255, 0.42)", opacity: historyEditSaving ? 0.55 : 1 }}
+              >
+                {historyEditSaving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
     </div>
   );

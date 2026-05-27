@@ -1,4 +1,8 @@
 const { query } = require("../config/db");
+const {
+  getTimeReportRows,
+  timeReportRowsToCsv,
+} = require("../services/timeReport.service");
 
 const CALLBACK_DISPOSITIONS = [
   "Concern Person Not Available",
@@ -19,6 +23,13 @@ const NOT_INTERESTED_DISPOSITIONS = [
 ];
 
 const DEFAULT_SUB_DISPOSITION = "NA";
+const EDITABLE_RESPONSE_FIELDS = new Set([
+  "callStatus",
+  "disposition",
+  "subDisposition",
+  "language",
+  "languageOther",
+]);
 
 const RESPONSE_SELECT = `
   id,
@@ -32,8 +43,7 @@ const RESPONSE_SELECT = `
   disposition,
   sub_disposition,
   language,
-  language_other,
-  remark
+  language_other
 `;
 
 const escapeCsv = (value) => {
@@ -45,14 +55,97 @@ const escapeCsv = (value) => {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
+const formatExportDateTime = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  const formattedDate = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+  const formattedTime = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+
+  return `${formattedDate} ${formattedTime}`;
+};
+
 const normalizePageSize = (value) => {
   const requested = Number.parseInt(value, 10);
-  return [10, 25, 50].includes(requested) ? requested : 10;
+  return [10, 25, 50, 1000, 5000].includes(requested) ? requested : 10;
 };
 
 const normalizePage = (value) => {
   const requested = Number.parseInt(value, 10);
   return Number.isFinite(requested) && requested > 0 ? requested : 1;
+};
+
+const shouldExportAllRows = (value) => {
+  return ["1", "true", "yes"].includes(String(value || "").trim().toLowerCase());
+};
+
+const cleanText = (value, maxLength = 500) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  return String(value).trim().slice(0, maxLength);
+};
+
+const normalizeEditableResponsePayload = (body = {}) => {
+  const unexpectedFields = Object.keys(body).filter((key) => !EDITABLE_RESPONSE_FIELDS.has(key));
+
+  if (unexpectedFields.length) {
+    return {
+      error: `Fields not allowed for edit: ${unexpectedFields.join(", ")}`,
+    };
+  }
+
+  const callStatus = cleanText(body.callStatus, 50);
+  const disposition = cleanText(body.disposition, 100);
+  const subDisposition = cleanText(body.subDisposition, 150);
+  const language = cleanText(body.language, 50);
+  const languageOther = cleanText(body.languageOther, 100);
+
+  if (!callStatus || !disposition) {
+    return {
+      error: "callStatus and disposition are required",
+    };
+  }
+
+  let safeSubDisposition = DEFAULT_SUB_DISPOSITION;
+
+  if (disposition === "Call Back") {
+    safeSubDisposition = CALLBACK_DISPOSITIONS.includes(subDisposition)
+      ? subDisposition
+      : DEFAULT_SUB_DISPOSITION;
+  } else if (disposition === "Not Interested") {
+    safeSubDisposition = NOT_INTERESTED_DISPOSITIONS.includes(subDisposition)
+      ? subDisposition
+      : DEFAULT_SUB_DISPOSITION;
+  }
+
+  return {
+    data: {
+      callStatus,
+      disposition,
+      subDisposition: safeSubDisposition,
+      language: language || "NA",
+      languageOther: languageOther || null,
+    },
+  };
 };
 
 const buildAdminResponseFilters = (queryParams = {}) => {
@@ -65,7 +158,16 @@ const buildAdminResponseFilters = (queryParams = {}) => {
   };
 
   if (queryParams.date) {
-    addFilter("created_at::date = ?::date", queryParams.date);
+    addFilter("created_at >= ?::date", queryParams.date);
+    addFilter("created_at < (?::date + INTERVAL '1 day')", queryParams.date);
+  }
+
+  if (queryParams.dateFrom) {
+    addFilter("created_at >= ?::date", queryParams.dateFrom);
+  }
+
+  if (queryParams.dateTo) {
+    addFilter("created_at < (?::date + INTERVAL '1 day')", queryParams.dateTo);
   }
 
   if (queryParams.employeeId) {
@@ -86,6 +188,10 @@ const buildAdminResponseFilters = (queryParams = {}) => {
 
   if (queryParams.disposition && queryParams.disposition !== "all") {
     addFilter("disposition = ?", queryParams.disposition);
+  }
+
+  if (queryParams.language && queryParams.language !== "all") {
+    addFilter("COALESCE(NULLIF(language_other, ''), language) = ?", queryParams.language);
   }
 
   if (queryParams.search) {
@@ -111,7 +217,6 @@ const createResponse = async (req, res, next) => {
       subDisposition,
       language,
       languageOther,
-      remark,
     } = req.body;
 
     if (!referenceId || !callStatus || !disposition) {
@@ -161,10 +266,9 @@ const createResponse = async (req, res, next) => {
          disposition,
          sub_disposition,
          language,
-         language_other,
-         remark
+         language_other
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING ${RESPONSE_SELECT}`,
       [
         agent.employee_id || req.user.employeeId || "NA",
@@ -177,7 +281,6 @@ const createResponse = async (req, res, next) => {
         safeSubDisposition,
         safeLanguage,
         languageOther || null,
-        remark || null,
       ]
     );
 
@@ -185,6 +288,77 @@ const createResponse = async (req, res, next) => {
       success: true,
       message: "Response saved successfully",
       data: result.rows[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateAgentResponse = async (req, res, next) => {
+  try {
+    if (req.user.role !== "agent") {
+      return res.status(403).json({
+        success: false,
+        message: "Only agents can edit their own call history",
+      });
+    }
+
+    const responseId = Number.parseInt(req.params.id, 10);
+
+    if (!Number.isFinite(responseId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid response id is required",
+      });
+    }
+
+    const { data, error } = normalizeEditableResponsePayload(req.body);
+
+    if (error) {
+      return res.status(400).json({
+        success: false,
+        message: error,
+      });
+    }
+
+    const result = await query(
+      `UPDATE responses
+       SET
+         call_status = $1,
+         disposition = $2,
+         sub_disposition = $3,
+         language = $4,
+         language_other = $5
+       WHERE id = $6
+         AND employee_id = $7
+         AND created_at::date = CURRENT_DATE
+       RETURNING ${RESPONSE_SELECT}`,
+      [
+        data.callStatus,
+        data.disposition,
+        data.subDisposition,
+        data.language,
+        data.languageOther,
+        responseId,
+        req.user.employeeId || "",
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(403).json({
+        success: false,
+        message: "You can edit only your own same-day call entries",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Call history updated successfully",
+      data: {
+        ...result.rows[0],
+        history_group: "today",
+        is_editable: true,
+      },
     });
   } catch (error) {
     next(error);
@@ -200,12 +374,13 @@ const getResponses = async (req, res, next) => {
       });
     }
 
+    const exportAll = shouldExportAllRows(req.query.exportAll);
     const page = normalizePage(req.query.page);
-    const pageSize = normalizePageSize(req.query.pageSize);
-    const offset = (page - 1) * pageSize;
+    const pageSize = exportAll ? null : normalizePageSize(req.query.pageSize);
+    const offset = exportAll ? null : (page - 1) * pageSize;
     const { params, whereSql } = buildAdminResponseFilters(req.query);
-    const limitParam = params.length + 1;
-    const offsetParam = params.length + 2;
+    const paginationSql = exportAll ? "" : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    const queryParams = exportAll ? params : [...params, pageSize, offset];
 
     const result = await query(
       `WITH filtered AS (
@@ -227,7 +402,7 @@ const getResponses = async (req, res, next) => {
            END AS report_group
          FROM filtered
          ORDER BY created_at DESC
-         LIMIT $${limitParam} OFFSET $${offsetParam}
+         ${paginationSql}
        ),
        today_summary AS (
          SELECT
@@ -239,17 +414,30 @@ const getResponses = async (req, res, next) => {
          WHERE created_at::date = CURRENT_DATE
        ),
        agent_summary AS (
+         WITH current_agent_status AS (
+           SELECT
+             u.id,
+             CASE
+               WHEN BOOL_OR(s.logout_time IS NULL AND LOWER(s.status) = 'online') THEN 'online'
+               WHEN BOOL_OR(s.logout_time IS NULL AND LOWER(s.status) IN ('break', 'on break')) THEN 'break'
+               ELSE 'offline'
+             END AS current_status
+           FROM users u
+           LEFT JOIN agent_sessions s ON s.user_id = u.id AND s.logout_time IS NULL
+           WHERE u.role = 'agent'
+           GROUP BY u.id
+         )
          SELECT
-           COUNT(DISTINCT user_id) FILTER (WHERE LOWER(status) = 'online' AND logout_time IS NULL)::int AS active_agents,
-           COUNT(DISTINCT user_id) FILTER (WHERE LOWER(status) IN ('break', 'on break') AND logout_time IS NULL)::int AS agents_on_break
-         FROM agent_sessions
+           COUNT(*) FILTER (WHERE current_status = 'online')::int AS active_agents,
+           COUNT(*) FILTER (WHERE current_status = 'break')::int AS agents_on_break
+         FROM current_agent_status
        )
        SELECT
          COALESCE((SELECT json_agg(paged ORDER BY paged.created_at DESC) FROM paged), '[]'::json) AS records,
          COALESCE((SELECT total_filtered FROM filtered_count), 0)::int AS total_filtered,
          (SELECT row_to_json(today_summary) FROM today_summary) AS summary,
          (SELECT row_to_json(agent_summary) FROM agent_summary) AS agent_summary`,
-      [...params, pageSize, offset]
+      queryParams
     );
 
     const payload = result.rows[0] || {};
@@ -272,9 +460,9 @@ const getResponses = async (req, res, next) => {
         },
         pagination: {
           page,
-          pageSize,
+          pageSize: exportAll ? total : pageSize,
           total,
-          totalPages: Math.max(Math.ceil(total / pageSize), 1),
+          totalPages: exportAll ? 1 : Math.max(Math.ceil(total / pageSize), 1),
         },
       },
     });
@@ -292,10 +480,14 @@ const exportResponses = async (req, res, next) => {
       });
     }
 
+    const { params, whereSql } = buildAdminResponseFilters(req.query);
     const result = await query(
       `SELECT ${RESPONSE_SELECT}
        FROM responses
+       WHERE ${whereSql}
        ORDER BY created_at DESC`
+      ,
+      params
     );
 
     const headers = [
@@ -307,15 +499,27 @@ const exportResponses = async (req, res, next) => {
       "dialer_id",
       "reference_id",
       "call_status",
+      "connected_status",
       "disposition",
       "sub_disposition",
       "language",
       "language_other",
-      "remark",
     ];
 
     const rows = result.rows.map((row) =>
-      headers.map((header) => escapeCsv(row[header])).join(",")
+      headers
+        .map((header) => {
+          if (header === "created_at") {
+            return escapeCsv(formatExportDateTime(row[header]));
+          }
+
+          if (header === "connected_status") {
+            return escapeCsv(row.call_status === "Connected" ? "Connected" : "Not Connected");
+          }
+
+          return escapeCsv(row[header]);
+        })
+        .join(",")
     );
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -329,8 +533,73 @@ const exportResponses = async (req, res, next) => {
   }
 };
 
+const getTimeReport = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Admin access required",
+      });
+    }
+
+    const rows = await getTimeReportRows(req.query);
+
+    const summary = rows.reduce(
+      (totals, row) => ({
+        totalLoginDuration: totals.totalLoginDuration + (row.total_login_duration || 0),
+        totalBreakDuration: totals.totalBreakDuration + (row.total_break_duration || 0),
+        staffTimeDuration: totals.staffTimeDuration + (row.staff_time_duration || 0),
+        totalBreakCount: totals.totalBreakCount + (row.break_count || 0),
+      }),
+      {
+        totalLoginDuration: 0,
+        totalBreakDuration: 0,
+        staffTimeDuration: 0,
+        totalBreakCount: 0,
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Session and break report fetched successfully",
+      data: {
+        records: rows,
+        summary,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const exportTimeReport = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Admin access required",
+      });
+    }
+
+    const rows = await getTimeReportRows(req.query);
+    const csv = timeReportRowsToCsv(rows);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="session-break-report-${new Date().toISOString().slice(0, 10)}.csv"`
+    );
+    res.status(200).send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createResponse,
+  updateAgentResponse,
   getResponses,
   exportResponses,
+  getTimeReport,
+  exportTimeReport,
 };

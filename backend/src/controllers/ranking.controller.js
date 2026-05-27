@@ -20,7 +20,23 @@ const buildPeriodWhere = (period) => {
   return "r.created_at::date = CURRENT_DATE";
 };
 
-const leaderboardSql = (period) => `
+const buildDateWhere = ({ period, startDate, endDate }, params) => {
+  const conditions = [];
+
+  if (startDate) {
+    params.push(startDate);
+    conditions.push(`r.created_at >= $${params.length}::date`);
+  }
+
+  if (endDate) {
+    params.push(endDate);
+    conditions.push(`r.created_at < ($${params.length}::date + INTERVAL '1 day')`);
+  }
+
+  return conditions.length ? conditions.join(" AND ") : buildPeriodWhere(period);
+};
+
+const leaderboardSql = ({ period, startDate, endDate }, params) => `
   WITH response_metrics AS (
     SELECT
       r.employee_id,
@@ -28,7 +44,7 @@ const leaderboardSql = (period) => `
       COUNT(*) FILTER (WHERE LOWER(r.call_status) = 'connected')::int AS connected_calls,
       COUNT(*) FILTER (WHERE LOWER(r.disposition) IN ('positive', 'already positive'))::int AS positive_calls
     FROM responses r
-    WHERE ${buildPeriodWhere(period)}
+    WHERE ${buildDateWhere({ period, startDate, endDate }, params)}
     GROUP BY r.employee_id
   ),
   session_status AS (
@@ -43,7 +59,7 @@ const leaderboardSql = (period) => `
     SELECT
       ROW_NUMBER() OVER (
         ORDER BY
-          ((COALESCE(rm.positive_calls, 0) * 10) + (COALESCE(rm.connected_calls, 0) * 4) + COALESCE(rm.total_calls, 0)) DESC,
+          ((COALESCE(rm.positive_calls, 0) * 5) + (COALESCE(rm.connected_calls, 0) * 3) + (COALESCE(rm.total_calls, 0) * 2)) DESC,
           COALESCE(rm.positive_calls, 0) DESC,
           COALESCE(rm.connected_calls, 0) DESC,
           COALESCE(rm.total_calls, 0) DESC,
@@ -56,10 +72,10 @@ const leaderboardSql = (period) => `
       COALESCE(rm.connected_calls, 0)::int AS connected_calls,
       COALESCE(rm.positive_calls, 0)::int AS positive_calls,
       CASE
-        WHEN COALESCE(rm.total_calls, 0) = 0 THEN 0
-        ELSE ROUND((COALESCE(rm.positive_calls, 0)::numeric / rm.total_calls::numeric) * 100, 2)
+        WHEN COALESCE(rm.connected_calls, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(rm.positive_calls, 0)::numeric / rm.connected_calls::numeric) * 100, 2)
       END AS conversion_rate,
-      ((COALESCE(rm.positive_calls, 0) * 10) + (COALESCE(rm.connected_calls, 0) * 4) + COALESCE(rm.total_calls, 0))::int AS ranking_score,
+      ((COALESCE(rm.positive_calls, 0) * 5) + (COALESCE(rm.connected_calls, 0) * 3) + (COALESCE(rm.total_calls, 0) * 2))::int AS ranking_score,
       CASE
         WHEN COALESCE(ss.has_online_session, false) THEN 'online'
         WHEN COALESCE(ss.has_break_session, false) THEN 'break'
@@ -95,17 +111,26 @@ const getAdminLeaderboard = async (req, res, next) => {
     }
 
     const period = normalizePeriod(req.query.period);
+    const startDate = String(req.query.startDate || "").trim();
+    const endDate = String(req.query.endDate || "").trim();
+    const agentId = String(req.query.agentId || "").trim();
     const search = String(req.query.search || "").trim();
     const params = [];
-    let whereSql = "";
+    const filters = [];
 
     if (search) {
       params.push(`%${search}%`);
-      whereSql = "WHERE agent_name ILIKE $1 OR employee_id ILIKE $1";
+      filters.push(`(agent_name ILIKE $${params.length} OR employee_id ILIKE $${params.length})`);
     }
 
+    if (agentId && agentId !== "all") {
+      params.push(agentId);
+      filters.push(`(agent_id::text = $${params.length} OR employee_id = $${params.length})`);
+    }
+
+    const whereSql = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
     const result = await query(
-      `${leaderboardSql(period)}
+      `${leaderboardSql({ period, startDate, endDate }, params)}
        ${whereSql}
        ORDER BY
          ranking_score DESC,
@@ -132,8 +157,9 @@ const getAdminLeaderboard = async (req, res, next) => {
 const getAgentRanking = async (req, res, next) => {
   try {
     const period = normalizePeriod(req.query.period);
+    const params = [];
     const result = await query(
-      `${leaderboardSql(period)}
+      `${leaderboardSql({ period }, params)}
        ORDER BY
          ranking_score DESC,
          positive_calls DESC,

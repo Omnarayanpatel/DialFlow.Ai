@@ -41,6 +41,17 @@ const normalizeStatus = (status) => {
   return "offline";
 };
 
+const normalizeBreakDetails = ({ reason, remark } = {}) => {
+  const allowedReasons = new Set(["Lunch Break", "Tea Break", "Bio Break", "Session"]);
+  const cleanReason = String(reason || "").trim();
+  const cleanRemark = String(remark || "").trim();
+
+  return {
+    reason: allowedReasons.has(cleanReason) ? cleanReason : "",
+    remark: cleanRemark.slice(0, 500),
+  };
+};
+
 const refreshUserStatusFromSessions = async (userId) => {
   const result = await query(
     `WITH active_sessions AS (
@@ -99,14 +110,34 @@ const login = async (req, res, next) => {
     let sessionId = null;
 
     if (user.role === "agent") {
-      const sessionResult = await query(
-        `INSERT INTO agent_sessions (user_id, login_time, status)
-         VALUES ($1, CURRENT_TIMESTAMP, 'online')
-         RETURNING id`,
-        [user.id]
-      );
+      sessionId = await withTransaction(async (client) => {
+        await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user.id]);
 
-      sessionId = sessionResult.rows[0]?.id || null;
+        const activeSession = await client.query(
+          `SELECT id
+           FROM agent_sessions
+           WHERE user_id = $1
+             AND logout_time IS NULL
+             AND LOWER(status) IN ('active', 'online', 'break', 'on break')
+           LIMIT 1`,
+          [user.id]
+        );
+
+        if (activeSession.rows[0]) {
+          const conflict = new Error("Agent already logged in on another device.");
+          conflict.statusCode = 409;
+          throw conflict;
+        }
+
+        const sessionResult = await client.query(
+          `INSERT INTO agent_sessions (user_id, login_time, status)
+           VALUES ($1, CURRENT_TIMESTAMP, 'online')
+           RETURNING id`,
+          [user.id]
+        );
+
+        return sessionResult.rows[0]?.id || null;
+      });
     }
 
     await query("UPDATE users SET status = 'online' WHERE id = $1", [user.id]);
@@ -226,6 +257,14 @@ const updateStatus = async (req, res, next) => {
     }
 
     const normalizedStatus = normalizeStatus(status);
+    const breakDetails = normalizeBreakDetails({
+      reason: req.body.breakReason || req.body.break_reason,
+      remark: req.body.breakRemark || req.body.break_remark,
+    });
+
+    if (req.user.role === "agent" && normalizedStatus === "break" && !breakDetails.reason) {
+      return res.status(400).json({ success: false, message: "Break reason is required" });
+    }
 
     let sessionId = req.user.sessionId || null;
 
@@ -247,6 +286,9 @@ const updateStatus = async (req, res, next) => {
              user_id,
              login_time,
              break_start_time,
+             break_end_time,
+             break_reason,
+             break_remark,
              break_count,
              status
            )
@@ -254,14 +296,31 @@ const updateStatus = async (req, res, next) => {
              $1,
              CURRENT_TIMESTAMP,
              CASE WHEN $2 = 'break' THEN CURRENT_TIMESTAMP ELSE NULL END,
+             NULL,
+             CASE WHEN $2 = 'break' THEN $3 ELSE NULL END,
+             CASE WHEN $2 = 'break' THEN $4 ELSE NULL END,
              CASE WHEN $2 = 'break' THEN 1 ELSE 0 END,
              $2
            )
            RETURNING id`,
-          [req.user.id, normalizedStatus]
+          [req.user.id, normalizedStatus, breakDetails.reason || null, breakDetails.remark || null]
         );
 
         sessionId = createdSession.rows[0]?.id || null;
+
+        if (sessionId && normalizedStatus === "break") {
+          await query(
+            `INSERT INTO agent_breaks (
+               session_id,
+               user_id,
+               break_start_time,
+               break_reason,
+               break_remark
+             )
+             VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)`,
+            [sessionId, req.user.id, breakDetails.reason || null, breakDetails.remark || null]
+          );
+        }
       }
     }
 
@@ -272,10 +331,30 @@ const updateStatus = async (req, res, next) => {
            SET
              status = 'break',
              break_start_time = COALESCE(break_start_time, CURRENT_TIMESTAMP),
+             break_end_time = NULL,
+             break_reason = CASE WHEN break_start_time IS NULL THEN $3 ELSE COALESCE(break_reason, $3) END,
+             break_remark = CASE WHEN break_start_time IS NULL THEN $4 ELSE COALESCE(break_remark, $4) END,
              break_count = CASE WHEN break_start_time IS NULL THEN break_count + 1 ELSE break_count END,
              updated_at = CURRENT_TIMESTAMP
            WHERE id = $1 AND user_id = $2 AND logout_time IS NULL`,
-          [sessionId, req.user.id]
+          [sessionId, req.user.id, breakDetails.reason || null, breakDetails.remark || null]
+        );
+
+        await query(
+          `INSERT INTO agent_breaks (
+             session_id,
+             user_id,
+             break_start_time,
+             break_reason,
+             break_remark
+           )
+           SELECT $1, $2, CURRENT_TIMESTAMP, $3, $4
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM agent_breaks
+             WHERE session_id = $1 AND break_end_time IS NULL
+           )`,
+          [sessionId, req.user.id, breakDetails.reason || null, breakDetails.remark || null]
         );
       } else if (normalizedStatus === "online") {
         await query(
@@ -286,9 +365,26 @@ const updateStatus = async (req, res, next) => {
                WHEN break_start_time IS NULL THEN 0
                ELSE GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
              END,
+             break_end_time = CASE WHEN break_start_time IS NULL THEN break_end_time ELSE CURRENT_TIMESTAMP END,
              break_start_time = NULL,
              updated_at = CURRENT_TIMESTAMP
            WHERE id = $1 AND user_id = $2 AND logout_time IS NULL`,
+          [sessionId, req.user.id]
+        );
+
+        await query(
+          `UPDATE agent_breaks
+           SET
+             break_end_time = CURRENT_TIMESTAMP,
+             total_break_duration = GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0),
+             updated_at = CURRENT_TIMESTAMP
+           WHERE id = (
+             SELECT id
+             FROM agent_breaks
+             WHERE session_id = $1 AND user_id = $2 AND break_end_time IS NULL
+             ORDER BY break_start_time DESC
+             LIMIT 1
+           )`,
           [sessionId, req.user.id]
         );
       } else {
@@ -301,9 +397,26 @@ const updateStatus = async (req, res, next) => {
                WHEN break_start_time IS NULL THEN 0
                ELSE GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
              END,
+             break_end_time = CASE WHEN break_start_time IS NULL THEN break_end_time ELSE CURRENT_TIMESTAMP END,
              break_start_time = NULL,
              updated_at = CURRENT_TIMESTAMP
            WHERE id = $1 AND user_id = $2 AND logout_time IS NULL`,
+          [sessionId, req.user.id]
+        );
+
+        await query(
+          `UPDATE agent_breaks
+           SET
+             break_end_time = CURRENT_TIMESTAMP,
+             total_break_duration = GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0),
+             updated_at = CURRENT_TIMESTAMP
+           WHERE id = (
+             SELECT id
+             FROM agent_breaks
+             WHERE session_id = $1 AND user_id = $2 AND break_end_time IS NULL
+             ORDER BY break_start_time DESC
+             LIMIT 1
+           )`,
           [sessionId, req.user.id]
         );
       }
@@ -341,16 +454,22 @@ const getAllAgents = async (req, res, next) => {
            MIN(login_time) FILTER (WHERE logout_time IS NULL) AS login_time,
            COALESCE(SUM(
              GREATEST(
+               EXTRACT(EPOCH FROM (COALESCE(logout_time, CURRENT_TIMESTAMP) - login_time))::int,
+               0
+             )
+           ) FILTER (WHERE logout_time IS NULL), 0)::int AS staff_time_duration,
+           COALESCE(SUM(
+             GREATEST(
                EXTRACT(EPOCH FROM (COALESCE(logout_time, CURRENT_TIMESTAMP) - login_time))::int
                  - total_break_duration
                  - CASE
                      WHEN logout_time IS NULL AND break_start_time IS NOT NULL
                        THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
                      ELSE 0
-                   END,
+                 END,
                0
              )
-           ) FILTER (WHERE logout_time IS NULL), 0)::int AS active_session_duration,
+           ) FILTER (WHERE logout_time IS NULL), 0)::int AS total_login_duration,
            COALESCE(SUM(break_count) FILTER (WHERE logout_time IS NULL), 0)::int AS break_count,
            COALESCE(SUM(
              total_break_duration + CASE
@@ -368,7 +487,13 @@ const getAllAgents = async (req, res, next) => {
            ), 0)::int AS current_break_duration,
            BOOL_OR(logout_time IS NULL AND LOWER(status) = 'online') AS has_online_session,
            BOOL_OR(logout_time IS NULL AND LOWER(status) IN ('break', 'on break')) AS has_break_session,
-           COUNT(*) FILTER (WHERE logout_time IS NULL)::int AS active_session_count
+           COUNT(*) FILTER (WHERE logout_time IS NULL)::int AS active_session_count,
+           (ARRAY_AGG(break_reason ORDER BY break_start_time DESC NULLS LAST)
+             FILTER (WHERE logout_time IS NULL AND LOWER(status) IN ('break', 'on break')))[1] AS break_reason,
+           (ARRAY_AGG(break_remark ORDER BY break_start_time DESC NULLS LAST)
+             FILTER (WHERE logout_time IS NULL AND LOWER(status) IN ('break', 'on break')))[1] AS break_remark,
+           MAX(break_start_time) FILTER (WHERE logout_time IS NULL AND LOWER(status) IN ('break', 'on break')) AS break_start_time,
+           MAX(break_end_time) FILTER (WHERE logout_time IS NULL) AS break_end_time
          FROM agent_sessions
          GROUP BY user_id
        ),
@@ -394,11 +519,17 @@ const getAllAgents = async (req, res, next) => {
            ELSE 'offline'
          END AS status,
          sm.login_time,
-         COALESCE(sm.active_session_duration, 0) AS active_session_duration,
+         COALESCE(sm.total_login_duration, 0) AS total_login_duration,
+         COALESCE(sm.staff_time_duration, 0) AS active_session_duration,
+         COALESCE(sm.staff_time_duration, 0) AS staff_time_duration,
          COALESCE(sm.break_count, 0) AS break_count,
          COALESCE(sm.total_break_duration, 0) AS total_break_duration,
          COALESCE(sm.current_break_duration, 0) AS current_break_duration,
          COALESCE(sm.active_session_count, 0) AS active_session_count,
+         sm.break_reason,
+         sm.break_remark,
+         sm.break_start_time,
+         sm.break_end_time,
          COALESCE(tas.today_calls, 0) AS today_calls,
          COALESCE(tas.today_connected, 0) AS today_connected,
          COALESCE(tas.today_positive, 0) AS today_positive,
