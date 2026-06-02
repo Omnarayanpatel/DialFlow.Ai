@@ -81,6 +81,7 @@ const Login = ({ onAuthSuccess }) => {
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const [form, setForm] = useState({
+    role: "agent",
     employeeId: "",
     password: "",
   });
@@ -90,6 +91,12 @@ const Login = ({ onAuthSuccess }) => {
 
   useEffect(() => {
     document.title = "Login | Dialflow.ai";
+
+    const authFeedback = sessionStorage.getItem("authFeedback");
+    if (authFeedback) {
+      setFeedback(authFeedback);
+      sessionStorage.removeItem("authFeedback");
+    }
   }, []);
 
   const handleChange = (key, value) => {
@@ -111,15 +118,20 @@ const Login = ({ onAuthSuccess }) => {
     setFeedback("");
 
     try {
-      const data = await loginUser(form);
+      const data = await loginUser({
+        employeeId: form.employeeId,
+        password: form.password,
+        role: form.role,
+      });
       persistSession(data);
       onAuthSuccess();
 
-      // Automatic redirect based on role
-      if (data.user.role === "admin") {
-        navigate("/admin/dashboard");
+      if (data.user.role === "super_admin") {
+        navigate("/super-admin");
+      } else if (data.user.role === "admin") {
+        navigate("/admin");
       } else {
-        navigate("/agent/dashboard");
+        navigate("/agent");
       }
     } catch (error) {
       setFeedback(error.message || "Login failed.");
@@ -184,6 +196,15 @@ const Login = ({ onAuthSuccess }) => {
         </p>
 
         <div style={{ display: "grid", gap: "16px" }}>
+          <select
+            style={{ ...inputStyle, color: "#aaa3c2", cursor: "pointer" }}
+            value={form.role}
+            onChange={(event) => handleChange("role", event.target.value)}
+          >
+            <option value="agent" style={{ background: "#18162a" }}>Agent</option>
+            <option value="admin" style={{ background: "#18162a" }}>Admin</option>
+            <option value="super_admin" style={{ background: "#18162a" }}>Super Admin</option>
+          </select>
           <input
             style={inputStyle}
             type="text"

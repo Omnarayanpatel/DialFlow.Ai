@@ -34,6 +34,12 @@ const App = () => {
   const user = getStoredUser();
   const role = user?.role;
   const sessionKey = `${user?.id || ""}-${user?.employeeId || ""}-${localStorage.getItem("token") || ""}`;
+  const dashboardPath =
+    role === "super_admin"
+      ? "/super-admin"
+      : role === "admin"
+        ? "/admin"
+        : "/agent";
 
   return (
     <Router 
@@ -51,7 +57,7 @@ const App = () => {
           path="/login"
           element={
             isAuthenticated 
-              ? (role === "admin" ? <Navigate to="/admin/dashboard" /> : <Navigate to="/agent/dashboard" />)
+              ? <Navigate to={dashboardPath} />
               : <Login onAuthSuccess={() => setIsAuthenticated(true)} />
           } 
         />
@@ -59,19 +65,39 @@ const App = () => {
           path="/register"
           element={
             isAuthenticated 
-              ? (role === "admin" ? <Navigate to="/admin/dashboard" /> : <Navigate to="/agent/dashboard" />)
+              ? <Navigate to={dashboardPath} />
               : <Register onAuthSuccess={() => setIsAuthenticated(true)} />
           } 
         />
 
         {/* Dashboard Routes - Protected */}
         <Route 
+          path="/super-admin" 
+          element={isAuthenticated && role === "super_admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/super-admin/manage-admins" 
+          element={isAuthenticated && role === "super_admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/super-admin/audit-logs" 
+          element={isAuthenticated && role === "super_admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/admin" 
+          element={isAuthenticated && (role === "admin" || role === "super_admin") ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
           path="/admin/dashboard" 
-          element={isAuthenticated && role === "admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
+          element={<Navigate to="/admin" />} 
+        />
+        <Route 
+          path="/agent" 
+          element={isAuthenticated && role === "agent" ? <Dashboard key={sessionKey} /> : <Navigate to="/login" />} 
         />
         <Route 
           path="/agent/dashboard" 
-          element={isAuthenticated && role !== "admin" ? <Dashboard key={sessionKey} /> : <Navigate to="/login" />} 
+          element={<Navigate to="/agent" />} 
         />
       </Routes>
     </Router>

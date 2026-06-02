@@ -7,6 +7,8 @@ const agentRoutes = require("./routes/agent.routes");
 const callRoutes = require("./routes/call.routes");
 const rankingRoutes = require("./routes/ranking.routes");
 const responseRoutes = require("./routes/response.routes");
+const superAdminRoutes = require("./routes/superAdmin.routes");
+const downtimeRoutes = require("./routes/downtime.routes");
 const errorMiddleware = require("./middlewares/error.middleware");
 
 const app = express();
@@ -33,6 +35,8 @@ app.use("/api/agents", agentRoutes);
 app.use("/api/calls", callRoutes);
 app.use("/api/rankings", rankingRoutes);
 app.use("/api/responses", responseRoutes);
+app.use("/api/super-admin", superAdminRoutes);
+app.use("/api/downtime", downtimeRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({

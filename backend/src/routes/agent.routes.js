@@ -9,12 +9,13 @@ const {
   updateAgent,
 } = require("../controllers/auth.controller");
 const authMiddleware = require("../middlewares/auth.middleware");
+const { requireAdmin } = require("../middlewares/auth.middleware");
 
 const router = express.Router();
 
 router.get("/dashboard", authMiddleware, getAgentDashboard);
 router.get("/history", authMiddleware, getAgentHistory);
-router.put("/:id", authMiddleware, updateAgent);
-router.delete("/:id", authMiddleware, deleteAgent);
+router.put("/:id", authMiddleware, requireAdmin, updateAgent);
+router.delete("/:id", authMiddleware, requireAdmin, deleteAgent);
 
 module.exports = router;

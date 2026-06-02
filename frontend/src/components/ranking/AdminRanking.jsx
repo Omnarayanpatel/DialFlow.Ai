@@ -97,6 +97,30 @@ const exportRows = (rows, period, format) => {
 
 const insightValue = (row, key) => (row ? row[key] : 0);
 
+const formulaWeights = [
+  {
+    label: "Positive Calls",
+    weight: "50%",
+    note: "Highest Weight",
+    color: "#35e5a7",
+    glow: "rgba(53, 229, 167, 0.22)",
+  },
+  {
+    label: "Connected Calls",
+    weight: "30%",
+    note: "Medium Weight",
+    color: "#8b5cf6",
+    glow: "rgba(139, 92, 246, 0.24)",
+  },
+  {
+    label: "Total Calls",
+    weight: "20%",
+    note: "Base Contribution",
+    color: "#ffd166",
+    glow: "rgba(255, 209, 102, 0.2)",
+  },
+];
+
 const AdminRanking = ({ token }) => {
   const [period, setPeriod] = useState("today");
   const [search, setSearch] = useState("");
@@ -157,12 +181,13 @@ const AdminRanking = ({ token }) => {
           .ranking-filter-grid { display: grid; grid-template-columns: 360px minmax(220px, 1fr) auto auto; gap: 14px; align-items: center; }
           .ranking-podium-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
           .ranking-insight-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+          .ranking-formula-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
           .ranking-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
           @media (max-width: 1100px) {
-            .ranking-filter-grid, .ranking-podium-grid, .ranking-insight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .ranking-filter-grid, .ranking-podium-grid, .ranking-insight-grid, .ranking-formula-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           }
           @media (max-width: 680px) {
-            .ranking-filter-grid, .ranking-podium-grid, .ranking-insight-grid { grid-template-columns: 1fr; }
+            .ranking-filter-grid, .ranking-podium-grid, .ranking-insight-grid, .ranking-formula-grid { grid-template-columns: 1fr; }
           }
         `}
       </style>
@@ -171,10 +196,56 @@ const AdminRanking = ({ token }) => {
         <div>
           <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Agent Ranking</h1>
           <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
-            Score = positive x 5 + connected x 3 + total calls x 2
+            Weighted leaderboard performance
           </div>
         </div>
       </div>
+
+      <section
+        style={{
+          ...panel,
+          marginTop: "24px",
+          padding: "24px",
+          background: "linear-gradient(180deg, rgba(31, 24, 58, 0.88), rgba(14, 12, 28, 0.94))",
+          borderColor: "rgba(168, 85, 247, 0.4)",
+          boxShadow: "0 18px 60px rgba(0, 0, 0, 0.28)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "18px", alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ color: "#8f98b7", fontSize: "13px", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Ranking Formula
+            </div>
+            <div style={{ marginTop: "10px", color: "#f4f0ff", fontSize: "22px", fontWeight: 800 }}>
+              Score = (Positive × 5) + (Connected × 3) + (Total Calls × 2)
+            </div>
+          </div>
+          <div style={{ maxWidth: "520px", color: "#b7bfd8", lineHeight: 1.55 }}>
+            Rankings are calculated using weighted performance metrics. Positive calls contribute the highest impact, followed by connected calls and total calls.
+          </div>
+        </div>
+
+        <div className="ranking-formula-grid" style={{ marginTop: "20px" }}>
+          {formulaWeights.map((item) => (
+            <div
+              key={item.label}
+              style={{
+                padding: "16px",
+                borderRadius: "14px",
+                background: `linear-gradient(180deg, ${item.glow}, rgba(255,255,255,0.035))`,
+                border: `1px solid ${item.color}55`,
+                boxShadow: `0 0 28px ${item.glow}`,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center" }}>
+                <span style={{ color: item.color, fontSize: "15px", fontWeight: 800 }}>{item.label}</span>
+                <span style={{ color: item.color, fontSize: "22px", fontWeight: 900 }}>{item.weight}</span>
+              </div>
+              <div style={{ marginTop: "8px", color: "#d8d1ee", fontSize: "14px" }}>{item.note}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <section className="ranking-filter-grid" style={{ marginTop: "26px" }}>
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>

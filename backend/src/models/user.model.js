@@ -3,7 +3,7 @@ const userSchema = {
   name: "string",
   email: "string",
   password: "string",
-  role: "admin | agent",
+  role: "super_admin | admin | agent",
   createdAt: "date",
   updatedAt: "date",
 };

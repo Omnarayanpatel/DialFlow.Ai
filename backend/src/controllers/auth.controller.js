@@ -2,16 +2,20 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const { query, withTransaction } = require("../config/db");
+const { logAuditEvent } = require("../services/audit.service");
 
 const buildToken = (user, sessionId = null) =>
   jwt.sign(
     {
       id: user.id,
+      employee_id: user.employee_id,
       employeeId: user.employee_id,
       zohoId: user.zoho_id,
       name: user.name,
       role: user.role,
       sessionId,
+      token_version: user.token_version || 0,
+      tokenVersion: user.token_version || 0,
     },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
@@ -24,6 +28,7 @@ const sanitizeUser = (user) => ({
   zohoId: user.zoho_id,
   role: user.role,
   status: normalizeStatus(user.status),
+  email: user.email || "",
   createdAt: user.created_at,
 });
 
@@ -40,6 +45,16 @@ const normalizeStatus = (status) => {
 
   return "offline";
 };
+
+const normalizeRole = (role) => {
+  if (role === "super_admin" || role === "admin") {
+    return role;
+  }
+
+  return "agent";
+};
+
+const isAdminRole = (role) => role === "admin" || role === "super_admin";
 
 const normalizeBreakDetails = ({ reason, remark } = {}) => {
   const allowedReasons = new Set(["Lunch Break", "Tea Break", "Bio Break", "Session"]);
@@ -75,7 +90,7 @@ const refreshUserStatusFromSessions = async (userId) => {
 
 const login = async (req, res, next) => {
   try {
-    const { employeeId, password } = req.body;
+    const { employeeId, password, role } = req.body;
 
     if (!employeeId || !password) {
       return res.status(400).json({
@@ -85,7 +100,7 @@ const login = async (req, res, next) => {
     }
 
     const result = await query(
-      "SELECT id, name, password, employee_id, zoho_id, role, created_at FROM users WHERE employee_id = $1 LIMIT 1",
+      "SELECT id, name, password, employee_id, email, zoho_id, role, status, token_version, created_at FROM users WHERE employee_id = $1 LIMIT 1",
       [employeeId]
     );
 
@@ -104,6 +119,22 @@ const login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Invalid Employee ID or password",
+      });
+    }
+
+    const requestedRole = role ? normalizeRole(role) : null;
+
+    if (requestedRole && user.role !== requestedRole) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid Employee ID or password",
+      });
+    }
+
+    if ((user.role === "admin" || user.role === "super_admin") && String(user.status || "").toLowerCase() === "inactive") {
+      return res.status(403).json({
+        success: false,
+        message: "This admin account is inactive. Please contact a Super Admin.",
       });
     }
 
@@ -140,7 +171,7 @@ const login = async (req, res, next) => {
       });
     }
 
-    await query("UPDATE users SET status = 'online' WHERE id = $1", [user.id]);
+    await query("UPDATE users SET status = 'online', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
 
     user.status = "online";
 
@@ -159,7 +190,8 @@ const login = async (req, res, next) => {
 
 const register = async (req, res, next) => {
   try {
-    const { name, employeeId, password, role, adminCode } = req.body;
+    const { name, employeeId, password, role, adminCode, superAdminPasscode } = req.body;
+    const finalRole = normalizeRole(role);
 
     if (!name || !employeeId || !password) {
       return res.status(400).json({
@@ -168,13 +200,24 @@ const register = async (req, res, next) => {
       });
     }
 
-    if (role === "admin") {
-      const adminSecret = process.env.ADMIN_SECRET || "D_AI_AVY_2026";
+    if (finalRole === "admin") {
+      const adminSecret = process.env.ADMIN_PASSCODE || process.env.ADMIN_SECRET;
 
       if (adminCode !== adminSecret) {
         return res.status(403).json({
           success: false,
           message: "Invalid Admin passcode.",
+        });
+      }
+    }
+
+    if (finalRole === "super_admin") {
+      const expectedPasscode = process.env.SUPER_ADMIN_PASSCODE;
+
+      if (!expectedPasscode || superAdminPasscode !== expectedPasscode) {
+        return res.status(403).json({
+          success: false,
+          message: "Invalid Super Admin passcode.",
         });
       }
     }
@@ -192,7 +235,6 @@ const register = async (req, res, next) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const finalRole = role === "admin" ? "admin" : "agent";
 
     const createdUser = await query(
       `INSERT INTO users (name, password, employee_id, role)
@@ -224,7 +266,7 @@ const register = async (req, res, next) => {
 const getProfile = async (req, res, next) => {
   try {
     const result = await query(
-      "SELECT id, name, employee_id, zoho_id, role, status, created_at FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, name, employee_id, email, zoho_id, role, status, created_at FROM users WHERE id = $1 LIMIT 1",
       [req.user.id]
     );
 
@@ -443,7 +485,7 @@ const updateStatus = async (req, res, next) => {
 
 const getAllAgents = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdminRole(req.user.role)) {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
@@ -554,7 +596,7 @@ const getAgentMonitoring = getAllAgents;
 
 const updateAgent = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdminRole(req.user.role)) {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
@@ -569,7 +611,11 @@ const updateAgent = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Agent name and employee ID are required" });
     }
 
-    const normalizedRole = role === "admin" ? "admin" : "agent";
+    const normalizedRole = normalizeRole(role);
+    if (normalizedRole === "super_admin" && req.user.role !== "super_admin") {
+      return res.status(403).json({ success: false, message: "Super admin access required" });
+    }
+
     const passwordValue = String(password || "").trim();
 
     const updatedAgent = await withTransaction(async (client) => {
@@ -622,6 +668,17 @@ const updateAgent = async (req, res, next) => {
         [employeeId.trim(), name.trim(), currentAgent.employee_id]
       );
 
+      await logAuditEvent(
+        {
+          req,
+          action: "agent_edit",
+          target: `${name.trim()} (${employeeId.trim()})`,
+          targetType: "agent",
+          targetId: agentId,
+        },
+        client
+      );
+
       return result.rows[0];
     });
 
@@ -637,7 +694,7 @@ const updateAgent = async (req, res, next) => {
 
 const deleteAgent = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdminRole(req.user.role)) {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
@@ -664,6 +721,17 @@ const deleteAgent = async (req, res, next) => {
         error.statusCode = 404;
         throw error;
       }
+
+      await logAuditEvent(
+        {
+          req,
+          action: "agent_delete",
+          target: `${result.rows[0].name} (${result.rows[0].employee_id})`,
+          targetType: "agent",
+          targetId: agentId,
+        },
+        client
+      );
 
       return result.rows[0];
     });

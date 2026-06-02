@@ -9,6 +9,7 @@ const {
   getAgentMonitoring,
 } = require("../controllers/auth.controller");
 const authMiddleware = require("../middlewares/auth.middleware");
+const { requireAdmin } = require("../middlewares/auth.middleware");
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ router.post("/login", login);
 router.post("/register", register);
 router.get("/me", authMiddleware, getProfile);
 router.put("/status", authMiddleware, updateStatus);
-router.get("/agents", authMiddleware, getAllAgents);
-router.get("/agents/monitoring", authMiddleware, getAgentMonitoring);
+router.get("/agents", authMiddleware, requireAdmin, getAllAgents);
+router.get("/agents/monitoring", authMiddleware, requireAdmin, getAgentMonitoring);
 
 module.exports = router;

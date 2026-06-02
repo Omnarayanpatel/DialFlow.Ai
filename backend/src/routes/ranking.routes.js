@@ -5,10 +5,11 @@ const {
   getAgentRanking,
 } = require("../controllers/ranking.controller");
 const authMiddleware = require("../middlewares/auth.middleware");
+const { requireAdmin } = require("../middlewares/auth.middleware");
 
 const router = express.Router();
 
-router.get("/admin", authMiddleware, getAdminLeaderboard);
+router.get("/admin", authMiddleware, requireAdmin, getAdminLeaderboard);
 router.get("/agent", authMiddleware, getAgentRanking);
 
 module.exports = router;

@@ -35,6 +35,7 @@ const Register = ({ onAuthSuccess }) => {
     password: "",
     role: "agent",
     adminCode: "",
+    superAdminPasscode: "",
   });
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(false);
@@ -63,6 +64,11 @@ const Register = ({ onAuthSuccess }) => {
       return;
     }
 
+    if (form.role === "super_admin" && !form.superAdminPasscode) {
+      setFeedback("Super Admin passcode zaroori hai.");
+      return;
+    }
+
     setLoading(true);
     setFeedback("");
 
@@ -72,7 +78,9 @@ const Register = ({ onAuthSuccess }) => {
       onAuthSuccess();
 
       // Redirect to correct dashboard
-      if (data.user.role === "admin") {
+      if (data.user.role === "super_admin") {
+        navigate("/super-admin");
+      } else if (data.user.role === "admin") {
         navigate("/admin/dashboard");
       } else {
         navigate("/agent/dashboard");
@@ -163,6 +171,7 @@ const Register = ({ onAuthSuccess }) => {
           >
             <option value="agent" style={{ background: "#18162a" }}>Agent Access</option>
             <option value="admin" style={{ background: "#18162a" }}>Admin Access</option>
+            <option value="super_admin" style={{ background: "#18162a" }}>Super Admin Access</option>
           </select>
 
           {form.role === "admin" && (
@@ -172,6 +181,16 @@ const Register = ({ onAuthSuccess }) => {
               placeholder="Admin Passcode"
               value={form.adminCode}
               onChange={(event) => handleChange("adminCode", event.target.value)}
+            />
+          )}
+
+          {form.role === "super_admin" && (
+            <input
+              style={{ ...inputStyle, border: "1px solid #7d3cff" }}
+              type="password"
+              placeholder="Super Admin Passcode"
+              value={form.superAdminPasscode}
+              onChange={(event) => handleChange("superAdminPasscode", event.target.value)}
             />
           )}
         </div>

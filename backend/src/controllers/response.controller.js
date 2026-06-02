@@ -3,6 +3,7 @@ const {
   getTimeReportRows,
   timeReportRowsToCsv,
 } = require("../services/timeReport.service");
+const { logAuditEvent } = require("../services/audit.service");
 
 const CALLBACK_DISPOSITIONS = [
   "Concern Person Not Available",
@@ -367,7 +368,7 @@ const updateAgentResponse = async (req, res, next) => {
 
 const getResponses = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!["admin", "super_admin"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: "Admin access required",
@@ -473,7 +474,7 @@ const getResponses = async (req, res, next) => {
 
 const exportResponses = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!["admin", "super_admin"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: "Admin access required",
@@ -527,6 +528,13 @@ const exportResponses = async (req, res, next) => {
       "Content-Disposition",
       `attachment; filename="call-responses-${new Date().toISOString().slice(0, 10)}.csv"`
     );
+    await logAuditEvent({
+      req,
+      action: "report_download",
+      target: "All Responses CSV",
+      targetType: "report",
+      metadata: { report: "responses", rows: rows.length },
+    });
     res.status(200).send([headers.join(","), ...rows].join("\n"));
   } catch (error) {
     next(error);
@@ -535,7 +543,7 @@ const exportResponses = async (req, res, next) => {
 
 const getTimeReport = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!["admin", "super_admin"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: "Admin access required",
@@ -543,13 +551,24 @@ const getTimeReport = async (req, res, next) => {
     }
 
     const rows = await getTimeReportRows(req.query);
+    const sessionSummaryRows = Array.from(
+      rows
+        .reduce((sessions, row) => {
+          if (!sessions.has(row.session_id)) {
+            sessions.set(row.session_id, row);
+          }
 
-    const summary = rows.reduce(
+          return sessions;
+        }, new Map())
+        .values()
+    );
+
+    const summary = sessionSummaryRows.reduce(
       (totals, row) => ({
         totalLoginDuration: totals.totalLoginDuration + (row.total_login_duration || 0),
         totalBreakDuration: totals.totalBreakDuration + (row.total_break_duration || 0),
         staffTimeDuration: totals.staffTimeDuration + (row.staff_time_duration || 0),
-        totalBreakCount: totals.totalBreakCount + (row.break_count || 0),
+        totalBreakCount: totals.totalBreakCount + rows.filter((breakRow) => breakRow.session_id === row.session_id && breakRow.break_id).length,
       }),
       {
         totalLoginDuration: 0,
@@ -574,7 +593,7 @@ const getTimeReport = async (req, res, next) => {
 
 const exportTimeReport = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!["admin", "super_admin"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: "Admin access required",
@@ -589,6 +608,13 @@ const exportTimeReport = async (req, res, next) => {
       "Content-Disposition",
       `attachment; filename="session-break-report-${new Date().toISOString().slice(0, 10)}.csv"`
     );
+    await logAuditEvent({
+      req,
+      action: "report_download",
+      target: "Session and Break Report CSV",
+      targetType: "report",
+      metadata: { report: "time_report", rows: rows.length },
+    });
     res.status(200).send(csv);
   } catch (error) {
     next(error);

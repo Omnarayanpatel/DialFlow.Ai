@@ -80,67 +80,68 @@ const getTimeReportRows = async (queryParams = {}) => {
   const { params, whereSql } = buildTimeReportFilters(queryParams);
 
   const result = await query(
-    `WITH break_summary AS (
-       SELECT
-         session_id,
-         MIN(break_start_time) AS first_break_start_time,
-         MAX(COALESCE(break_end_time, CURRENT_TIMESTAMP)) AS last_break_end_time,
-         (ARRAY_AGG(break_reason ORDER BY break_start_time DESC)
-           FILTER (WHERE break_reason IS NOT NULL AND break_reason <> ''))[1] AS break_reason,
-         COUNT(*)::int AS event_break_count,
-         COALESCE(SUM(
-           CASE
-             WHEN break_end_time IS NULL
-               THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
-             ELSE GREATEST(total_break_duration, 0)
-           END
-         ), 0)::int AS event_break_duration
-       FROM agent_breaks
-       GROUP BY session_id
-     ),
-     session_rows AS (
+    `WITH session_rows AS (
        SELECT
          s.id,
          u.name AS agent_name,
          u.employee_id,
          s.login_time,
          s.logout_time,
-         COALESCE(bs.first_break_start_time, s.break_start_time) AS break_start_time,
-         COALESCE(bs.last_break_end_time, s.break_end_time) AS break_end_time,
-         COALESCE(bs.break_reason, s.break_reason) AS break_reason,
-         CASE WHEN COALESCE(bs.event_break_count, 0) > 0 THEN bs.event_break_count ELSE s.break_count END AS break_count,
          GREATEST(EXTRACT(EPOCH FROM (COALESCE(s.logout_time, CURRENT_TIMESTAMP) - s.login_time))::int, 0) AS staff_time_duration,
-         CASE
-           WHEN COALESCE(bs.event_break_count, 0) > 0 THEN GREATEST(bs.event_break_duration, 0)
-           ELSE GREATEST(
-             s.total_break_duration + CASE
-               WHEN s.logout_time IS NULL AND s.break_start_time IS NOT NULL
-                 THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - s.break_start_time))::int, 0)
-               ELSE 0
-             END,
-             0
-           )::int
-         END AS total_break_duration
+         GREATEST(
+           s.total_break_duration + CASE
+             WHEN s.logout_time IS NULL AND s.break_start_time IS NOT NULL
+               THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - s.break_start_time))::int, 0)
+             ELSE 0
+           END,
+           0
+         )::int AS session_total_break_duration
        FROM agent_sessions s
        INNER JOIN users u ON u.id = s.user_id
-       LEFT JOIN break_summary bs ON bs.session_id = s.id
        WHERE ${whereSql}
+     ),
+     break_rows AS (
+       SELECT
+         b.id AS break_id,
+         b.session_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY b.session_id
+           ORDER BY b.break_start_time ASC, b.id ASC
+         )::int AS break_number,
+         b.break_reason,
+         b.break_remark,
+         b.break_start_time,
+         b.break_end_time,
+         GREATEST(
+           EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+           0
+         ) AS break_duration
+       FROM agent_breaks b
      )
      SELECT
-       id,
-       agent_name,
-       employee_id,
-       login_time,
-       logout_time,
-       break_start_time,
-       break_end_time,
-       break_reason,
-       break_count,
-       GREATEST(staff_time_duration - total_break_duration, 0)::int AS total_login_duration,
-       total_break_duration,
-       staff_time_duration
-     FROM session_rows
-     ORDER BY login_time DESC, agent_name ASC`,
+       sr.id,
+       sr.id AS session_id,
+       br.break_id,
+       sr.agent_name,
+       sr.employee_id,
+       sr.login_time,
+       sr.logout_time,
+       br.break_number,
+       CASE
+         WHEN LOWER(COALESCE(br.break_reason, '')) IN ('session', 'session break')
+           THEN COALESCE(NULLIF(TRIM(br.break_remark), ''), br.break_reason)
+         ELSE COALESCE(NULLIF(TRIM(br.break_reason), ''), NULLIF(TRIM(br.break_remark), ''))
+       END AS break_reason,
+       br.break_start_time,
+       br.break_end_time,
+       COALESCE(br.break_duration, 0)::int AS break_duration,
+       GREATEST(sr.staff_time_duration - sr.session_total_break_duration, 0)::int AS total_login_duration,
+       sr.session_total_break_duration AS total_break_duration,
+       sr.staff_time_duration,
+       COUNT(br.break_id) OVER (PARTITION BY sr.id)::int AS break_count
+     FROM session_rows sr
+     LEFT JOIN break_rows br ON br.session_id = sr.id
+     ORDER BY sr.agent_name ASC, sr.employee_id ASC, sr.login_time DESC, br.break_number ASC NULLS LAST`,
     params
   );
 
@@ -154,13 +155,14 @@ const timeReportRowsToCsv = (rows) => {
     "Login Date",
     "Login Time",
     "Logout Time",
-    "Break Start Time",
-    "Break End Time",
+    "Break #",
     "Break Reason",
-    "Total Login Time",
-    "Total Staff Time",
-    "Break Time",
-    "Break Count",
+    "Break Start",
+    "Break End",
+    "Break Duration",
+    "Total Login",
+    "Total Staff",
+    "Total Break Time",
   ];
 
   const csvRows = rows.map((row) =>
@@ -170,13 +172,14 @@ const timeReportRowsToCsv = (rows) => {
       formatExportDate(row.login_time),
       formatExportTime(row.login_time),
       formatExportTime(row.logout_time),
+      row.break_number || "",
+      row.break_reason,
       formatExportTime(row.break_start_time),
       formatExportTime(row.break_end_time),
-      row.break_reason,
+      formatDurationText(row.break_duration),
       formatDurationText(row.total_login_duration),
       formatDurationText(row.staff_time_duration),
       formatDurationText(row.total_break_duration),
-      row.break_count,
     ]
       .map(escapeCsv)
       .join(",")

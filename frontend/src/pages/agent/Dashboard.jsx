@@ -4,7 +4,9 @@ import LogoutConfirmationModal from "../../components/common/LogoutConfirmationM
 import ThemeToggle from "../../components/common/ThemeToggle";
 import AgentRanking from "../../components/ranking/AgentRanking";
 import { clearAgentSessionCache, updateUserStatus } from "../../services/authService";
+import { createDowntimeRequest, getMyCurrentDowntimeRequest } from "../../services/downtimeService";
 import { createAgentResponse, getAgentDashboardData, updateAgentHistoryEntry } from "../../services/responseService";
+import { createDowntimeSocket } from "../../services/socketService";
 import { useStore } from "../../store/useStore";
 import { useTheme } from "../../theme/useTheme";
 
@@ -74,6 +76,13 @@ const languageOptions = [
 
 const breakReasonOptions = ["Lunch Break", "Tea Break", "Bio Break", "Session"];
 const breakReasonsWithRemark = new Set(["Session"]);
+const downtimeIssueTypes = ["System Issue", "Internet Issue", "Portal Issue", "Dialer Issue"];
+const downtimeSocketEvents = [
+  "new_downtime_request",
+  "downtime_approved",
+  "downtime_rejected",
+  "downtime_resolved",
+];
 
 const fallbackSummary = {
   totalCalls: 0,
@@ -196,6 +205,50 @@ const formatDuration = (seconds) => {
 };
 
 const toSeconds = (value) => Math.max(Number.parseInt(value, 10) || 0, 0);
+
+const formatStatusDateTime = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "NA";
+  }
+
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).format(parsed);
+};
+
+const downtimeStatusLabel = (status) => {
+  const value = String(status || "").toLowerCase();
+
+  if (value === "pending") return "Pending Approval";
+  if (value === "approved") return "Approved";
+  if (value === "rejected") return "Rejected";
+  if (value === "resolved") return "Resolved";
+
+  return "No Request";
+};
+
+const downtimeStatusTone = (status) => {
+  const value = String(status || "").toLowerCase();
+
+  if (value === "pending") return { color: "#ffd02d", border: "rgba(255, 208, 45, 0.42)", bg: "rgba(255, 208, 45, 0.12)" };
+  if (value === "approved") return { color: "#35e5a7", border: "rgba(53, 229, 167, 0.42)", bg: "rgba(53, 229, 167, 0.12)" };
+  if (value === "rejected") return { color: "#ff7685", border: "rgba(255, 118, 133, 0.42)", bg: "rgba(255, 118, 133, 0.12)" };
+  if (value === "resolved") return { color: "#9bdcff", border: "rgba(39, 216, 255, 0.42)", bg: "rgba(39, 216, 255, 0.12)" };
+
+  return { color: "#afb6d4", border: "rgba(140, 143, 173, 0.32)", bg: "rgba(140, 143, 173, 0.12)" };
+};
 
 const formatTime = (date) => {
   if (!date) {
@@ -350,6 +403,11 @@ const Dashboard = () => {
   const [breakReason, setBreakReason] = useState("Lunch Break");
   const [breakRemark, setBreakRemark] = useState("");
   const [breakSaving, setBreakSaving] = useState(false);
+  const [isDowntimeModalOpen, setIsDowntimeModalOpen] = useState(false);
+  const [downtimeIssueType, setDowntimeIssueType] = useState("System Issue");
+  const [downtimeComment, setDowntimeComment] = useState("");
+  const [downtimeSaving, setDowntimeSaving] = useState(false);
+  const [currentDowntimeRequest, setCurrentDowntimeRequest] = useState(null);
 
   const [referenceId, setReferenceId] = useState("");
   const [callStatus, setCallStatus] = useState("Not Connected");
@@ -407,6 +465,10 @@ const Dashboard = () => {
     setIsBreakModalOpen(false);
     setBreakReason("Lunch Break");
     setBreakRemark("");
+    setIsDowntimeModalOpen(false);
+    setDowntimeIssueType("System Issue");
+    setDowntimeComment("");
+    setCurrentDowntimeRequest(null);
     setIsSessionHydrated(false);
   };
 
@@ -426,6 +488,24 @@ const Dashboard = () => {
   );
   const historyEditShowSubDisposition = Object.prototype.hasOwnProperty.call(subDispositionMap, historyEditForm.disposition);
   const historyEditShowOtherLanguage = historyEditForm.language === "Other";
+
+  const setDowntimeRequestFromServer = (request) => {
+    setCurrentDowntimeRequest(request ? { ...request, syncedAtMs: Date.now() } : null);
+  };
+
+  const loadCurrentDowntimeRequest = async () => {
+    if (!token) {
+      setCurrentDowntimeRequest(null);
+      return;
+    }
+
+    try {
+      const data = await getMyCurrentDowntimeRequest(token);
+      setDowntimeRequestFromServer(data.request || null);
+    } catch (_error) {
+      setCurrentDowntimeRequest(null);
+    }
+  };
 
   useEffect(() => {
     clockIntervalRef.current = window.setInterval(() => {
@@ -531,6 +611,7 @@ const Dashboard = () => {
         setSessionStats(nextSession);
         setIsPaused(nextSession.status === "break");
         setIsSessionHydrated(true);
+        loadCurrentDowntimeRequest();
       } catch (_error) {
         if (!ignore) {
           setRows(fallbackRows);
@@ -562,6 +643,35 @@ const Dashboard = () => {
     historyFilters.callStatus,
     historyFilters.disposition,
   ]);
+
+  useEffect(() => {
+    if (!token) {
+      return undefined;
+    }
+
+    const socket = createDowntimeSocket(token);
+
+    const handleDowntimeEvent = (request) => {
+      if (!request?.id) {
+        return;
+      }
+
+      if (request.agentId === user.id || request.employeeId === user.employeeId) {
+        setDowntimeRequestFromServer(request);
+      }
+    };
+
+    downtimeSocketEvents.forEach((eventName) => {
+      socket.on(eventName, handleDowntimeEvent);
+    });
+
+    return () => {
+      downtimeSocketEvents.forEach((eventName) => {
+        socket.off(eventName, handleDowntimeEvent);
+      });
+      socket.disconnect();
+    };
+  }, [token, user.id, user.employeeId]);
 
   const resetForm = () => {
     setReferenceId("");
@@ -636,6 +746,25 @@ const Dashboard = () => {
   const visualTotalBreakDurationToday = toSeconds(serverTotalBreakDurationToday) + (isOnBreak ? secondsSinceBackendSync : 0);
   const visualStaffTimeToday = toSeconds(serverStaffTimeToday) + (isActiveSession ? secondsSinceBackendSync : 0);
   const visualCurrentBreakDuration = toSeconds(serverCurrentBreakDuration) + (isOnBreak ? secondsSinceBackendSync : 0);
+  const currentDowntimeStatus = String(currentDowntimeRequest?.status || "").toLowerCase();
+  const hasBlockingDowntimeRequest = currentDowntimeStatus === "pending" || currentDowntimeStatus === "approved";
+  const currentDowntimeTone = downtimeStatusTone(currentDowntimeStatus);
+  const currentDowntimeDuration = (() => {
+    if (currentDowntimeStatus !== "approved" || !currentDowntimeRequest?.approvedAt) {
+      return toSeconds(currentDowntimeRequest?.durationSeconds || currentDowntimeRequest?.runningDurationSeconds);
+    }
+
+    const approvedAtMs = new Date(currentDowntimeRequest.approvedAt).getTime();
+
+    if (Number.isNaN(approvedAtMs)) {
+      return toSeconds(currentDowntimeRequest.runningDurationSeconds);
+    }
+
+    return Math.max(
+      Math.floor((currentTime.getTime() - approvedAtMs) / 1000),
+      toSeconds(currentDowntimeRequest.runningDurationSeconds)
+    );
+  })();
 
   const handleTogglePause = async () => {
     if (!isPaused) {
@@ -681,6 +810,53 @@ const Dashboard = () => {
       setFeedback("Unable to start break. Please try again.");
     } finally {
       setBreakSaving(false);
+    }
+  };
+
+  const closeDowntimeModal = () => {
+    if (downtimeSaving) {
+      return;
+    }
+
+    setIsDowntimeModalOpen(false);
+  };
+
+  const submitDowntimeRequest = async () => {
+    if (hasBlockingDowntimeRequest) {
+      setFeedback("You already have an active downtime request.");
+      return;
+    }
+
+    if (!downtimeIssueType) {
+      setFeedback("Please select an issue type.");
+      return;
+    }
+
+    if (!downtimeComment.trim()) {
+      setFeedback("Please add a comment for the system issue.");
+      return;
+    }
+
+    setDowntimeSaving(true);
+    setFeedback("");
+
+    try {
+      const createdRequest = await createDowntimeRequest(
+        {
+          issue_type: downtimeIssueType,
+          comment: downtimeComment.trim(),
+        },
+        token
+      );
+      setIsDowntimeModalOpen(false);
+      setDowntimeIssueType("System Issue");
+      setDowntimeComment("");
+      setDowntimeRequestFromServer(createdRequest);
+      setFeedback("Downtime request submitted. Timer starts after admin approval.");
+    } catch (error) {
+      setFeedback(error.message || "Unable to submit downtime request.");
+    } finally {
+      setDowntimeSaving(false);
     }
   };
 
@@ -1144,6 +1320,30 @@ const Dashboard = () => {
                   ) : null}
                 </div>
               ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  if (hasBlockingDowntimeRequest) {
+                    setFeedback("You already have an active downtime request.");
+                    return;
+                  }
+
+                  setIsDowntimeModalOpen(true);
+                }}
+                disabled={hasBlockingDowntimeRequest}
+                style={{
+                  ...modalButton,
+                  width: "100%",
+                  marginTop: "16px",
+                  border: "1px solid rgba(39, 216, 255, 0.36)",
+                  background: "rgba(39, 216, 255, 0.12)",
+                  color: "#9bdcff",
+                  opacity: hasBlockingDowntimeRequest ? 0.55 : 1,
+                  cursor: hasBlockingDowntimeRequest ? "not-allowed" : "pointer",
+                }}
+              >
+                System Issue
+              </button>
             </div>
           </div>
 
@@ -1493,6 +1693,59 @@ const Dashboard = () => {
               Login: {formatTime(sessionLoginTime)} | Staff Time: {formatDuration(visualStaffTimeToday)}
             </div>
           </div>
+
+          {currentDowntimeRequest ? (
+            <section
+              style={{
+                ...panel,
+                marginTop: "24px",
+                padding: "24px 26px",
+                borderColor: currentDowntimeTone.border,
+                background: `linear-gradient(180deg, ${currentDowntimeTone.bg}, rgba(19, 18, 37, 0.96))`,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "18px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ color: "#9da6c3", fontSize: "14px", letterSpacing: "0.06em" }}>DOWNTIME REQUEST STATUS</div>
+                  <h2 style={{ margin: "10px 0 0", fontSize: "24px", color: currentDowntimeTone.color }}>
+                    {downtimeStatusLabel(currentDowntimeStatus)}
+                  </h2>
+                </div>
+                <div
+                  style={{
+                    padding: "10px 16px",
+                    borderRadius: "999px",
+                    border: `1px solid ${currentDowntimeTone.border}`,
+                    background: currentDowntimeTone.bg,
+                    color: currentDowntimeTone.color,
+                    fontSize: "18px",
+                    fontWeight: 800,
+                  }}
+                >
+                  {currentDowntimeStatus === "approved" ? `Running ${formatDuration(currentDowntimeDuration)}` : currentDowntimeStatus === "resolved" ? `Final ${formatDuration(currentDowntimeDuration)}` : downtimeStatusLabel(currentDowntimeStatus)}
+                </div>
+              </div>
+
+              <div style={{ marginTop: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
+                {[
+                  ["Issue Type", currentDowntimeRequest.issueType],
+                  ["Requested Time", formatStatusDateTime(currentDowntimeRequest.requestedAt)],
+                  ["Approved By", currentDowntimeRequest.approvedByName || "NA"],
+                  ["Approved Time", formatStatusDateTime(currentDowntimeRequest.approvedAt)],
+                  [
+                    currentDowntimeStatus === "resolved" ? "Final Duration" : "Running Duration",
+                    currentDowntimeStatus === "pending" || currentDowntimeStatus === "rejected" ? "NA" : formatDuration(currentDowntimeDuration),
+                  ],
+                  ["Comment", currentDowntimeRequest.comment || "NA"],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ border: "1px solid rgba(122, 73, 255, 0.18)", borderRadius: "14px", padding: "14px", background: "rgba(10, 9, 20, 0.35)", minWidth: 0 }}>
+                    <div style={{ color: "#8d86aa", fontSize: "13px" }}>{label}</div>
+                    <div style={{ marginTop: "8px", color: "#f5f1ff", fontSize: "16px", lineHeight: 1.35, overflowWrap: "anywhere" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section
             className="agent-summary-grid"
@@ -1992,6 +2245,95 @@ const Dashboard = () => {
                 }}
               >
                 {breakSaving ? "Starting..." : "Confirm Break"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isDowntimeModalOpen ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "18px", background: breakModalTheme.overlay }}>
+          <div
+            style={{
+              ...panel,
+              width: "100%",
+              maxWidth: "500px",
+              padding: "26px",
+              background: breakModalTheme.cardBg,
+              border: "1px solid rgba(39, 216, 255, 0.36)",
+              boxShadow: breakModalTheme.shadow,
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "22px", color: breakModalTheme.heading }}>System Issue</h2>
+            <div style={{ marginTop: "10px", color: breakModalTheme.secondary, fontSize: "14px", lineHeight: 1.45 }}>
+              Submit a downtime request for admin approval. Downtime starts only after approval.
+            </div>
+
+            <div style={{ marginTop: "20px", display: "grid", gap: "14px" }}>
+              <select
+                className="crm-select"
+                style={{
+                  ...fieldBase,
+                  background: breakModalTheme.inputBg,
+                  border: breakModalTheme.inputBorder,
+                  color: breakModalTheme.inputText,
+                }}
+                value={downtimeIssueType}
+                onChange={(event) => setDowntimeIssueType(event.target.value)}
+              >
+                {downtimeIssueTypes.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <textarea
+                className="crm-textarea"
+                style={{
+                  ...fieldBase,
+                  minHeight: "120px",
+                  resize: "none",
+                  fontSize: "15px",
+                  padding: "13px 14px",
+                  background: breakModalTheme.inputBg,
+                  border: breakModalTheme.inputBorder,
+                  color: breakModalTheme.inputText,
+                }}
+                placeholder="Internet disconnected due to ISP outage."
+                value={downtimeComment}
+                maxLength={600}
+                onChange={(event) => setDowntimeComment(event.target.value)}
+              />
+            </div>
+
+            <div style={{ marginTop: "22px", display: "flex", justifyContent: "flex-end", gap: "12px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={closeDowntimeModal}
+                disabled={downtimeSaving}
+                style={{
+                  ...modalButton,
+                  background: breakModalTheme.cancelBg,
+                  border: breakModalTheme.cancelBorder,
+                  color: breakModalTheme.cancelText,
+                  opacity: downtimeSaving ? 0.55 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitDowntimeRequest}
+                disabled={downtimeSaving || hasBlockingDowntimeRequest}
+                style={{
+                  ...modalButton,
+                  background: "rgba(39, 216, 255, 0.18)",
+                  borderColor: "rgba(39, 216, 255, 0.5)",
+                  color: "#9bdcff",
+                  opacity: downtimeSaving || hasBlockingDowntimeRequest ? 0.55 : 1,
+                }}
+              >
+                {downtimeSaving ? "Submitting..." : "Submit Request"}
               </button>
             </div>
           </div>

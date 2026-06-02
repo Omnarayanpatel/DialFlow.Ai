@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import LogoutConfirmationModal from "../../components/common/LogoutConfirmationModal";
 import ThemeToggle from "../../components/common/ThemeToggle";
@@ -6,6 +7,23 @@ import AdminRanking from "../../components/ranking/AdminRanking";
 import { deleteAgent, forceLogoutAgent, forceLogoutAllAgents, getAgentMonitoring, registerUser, updateAgent } from "../../services/authService";
 import { downloadResponsesExport, downloadTimeReportExport, getAllResponses, getTimeReport } from "../../services/responseService";
 import { getAdminLeaderboard } from "../../services/rankingService";
+import { createDowntimeSocket } from "../../services/socketService";
+import {
+  approveDowntimeRequest,
+  getDowntimeReport,
+  getDowntimeRequests,
+  rejectDowntimeRequest,
+  resolveDowntimeRequest,
+} from "../../services/downtimeService";
+import {
+  createAuditLog,
+  createManagedAdmin,
+  deleteManagedAdmin,
+  forceLogoutManagedAdmin,
+  getAuditLogs,
+  getManagedAdmins,
+  updateManagedAdmin,
+} from "../../services/superAdminService";
 import { useStore } from "../../store/useStore";
 import { useTheme } from "../../theme/useTheme";
 
@@ -45,6 +63,19 @@ const ghostButton = {
   fontSize: "16px",
   fontWeight: 600,
 };
+
+const DOWNTIME_APPROVER_EMPLOYEE_IDS = new Set([
+  "AM21612560",
+  "AMPLTMP204",
+  "AM21612448",
+]);
+
+const downtimeSocketEvents = [
+  "new_downtime_request",
+  "downtime_approved",
+  "downtime_rejected",
+  "downtime_resolved",
+];
 
 const formatDate = (date) =>
   new Intl.DateTimeFormat("en-IN", {
@@ -120,11 +151,11 @@ const iconFor = (type) => {
 const statusTone = (status) => {
   const value = String(status || "").trim().toLowerCase();
 
-  if (status === "Connected" || value === "online") {
+  if (status === "Connected" || value === "online" || value === "active") {
     return { color: "#26e6ad", bg: "rgba(38, 230, 173, 0.12)", border: "rgba(38, 230, 173, 0.34)" };
   }
 
-  if (status === "Not Connected" || value === "offline") {
+  if (status === "Not Connected" || value === "offline" || value === "inactive") {
     return { color: "#ff7685", bg: "rgba(255, 118, 133, 0.12)", border: "rgba(255, 118, 133, 0.34)" };
   }
 
@@ -248,9 +279,18 @@ const escapeHtml = (value) =>
     .replace(/'/g, "&#39;");
 
 const AdminDashboard = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { token, user } = useStore();
   const { theme, toggleTheme } = useTheme();
-  const [activeView, setActiveView] = useState("overview");
+  const isSuperAdmin = user.role === "super_admin";
+  const isDowntimeApprover = DOWNTIME_APPROVER_EMPLOYEE_IDS.has(String(user.employeeId || "").trim());
+  const initialView = location.pathname.includes("/manage-admins")
+    ? "manage-admins"
+    : location.pathname.includes("/audit-logs")
+      ? "audit-logs"
+      : "overview";
+  const [activeView, setActiveView] = useState(initialView);
   const [responses, setResponses] = useState([]);
   const [allAgents, setAllAgents] = useState([]);
   const [adminSummary, setAdminSummary] = useState(fallbackAdminSummary);
@@ -280,6 +320,36 @@ const AdminDashboard = () => {
   const [forceLogoutTarget, setForceLogoutTarget] = useState(null);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [isAgentActionLoading, setIsAgentActionLoading] = useState(false);
+  const [managedAdmins, setManagedAdmins] = useState([]);
+  const [managedAdminSummary, setManagedAdminSummary] = useState({
+    totalAdmins: 0,
+    activeAdmins: 0,
+    totalAgents: 0,
+    onlineAgents: 0,
+  });
+  const [adminModalMode, setAdminModalMode] = useState("");
+  const [selectedAdmin, setSelectedAdmin] = useState(null);
+  const [adminForm, setAdminForm] = useState({
+    name: "",
+    employeeId: "",
+    email: "",
+    password: "",
+    role: "admin",
+    status: "active",
+  });
+  const [isAdminActionLoading, setIsAdminActionLoading] = useState(false);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditFilters, setAuditFilters] = useState({
+    startDate: "",
+    endDate: "",
+    admin: "all",
+    action: "all",
+  });
+  const [downtimeRequests, setDowntimeRequests] = useState([]);
+  const [isDowntimeLoading, setIsDowntimeLoading] = useState(false);
+  const [downtimeActionId, setDowntimeActionId] = useState(null);
+  const [downtimeNotifications, setDowntimeNotifications] = useState([]);
+  const [unreadDowntimeCount, setUnreadDowntimeCount] = useState(0);
   const [editAgentForm, setEditAgentForm] = useState({
     name: "",
     employeeId: "",
@@ -311,6 +381,12 @@ const AdminDashboard = () => {
     totalBreakCount: 0,
   });
   const [isTimeReportLoading, setIsTimeReportLoading] = useState(false);
+  const [downtimeReportDateFrom, setDowntimeReportDateFrom] = useState("2026-04-21");
+  const [downtimeReportDateTo, setDowntimeReportDateTo] = useState("2026-04-28");
+  const [downtimeReportAgent, setDowntimeReportAgent] = useState("all");
+  const [downtimeReportGenerated, setDowntimeReportGenerated] = useState(false);
+  const [downtimeReportRecords, setDowntimeReportRecords] = useState([]);
+  const [isDowntimeReportLoading, setIsDowntimeReportLoading] = useState(false);
   const [agentForm, setAgentForm] = useState({
     employeeId: "",
     name: "",
@@ -318,8 +394,18 @@ const AdminDashboard = () => {
   });
 
   useEffect(() => {
-    document.title = "Admin Dashboard | Dialflow.ai";
-  }, []);
+    document.title = isSuperAdmin ? "Super Admin Dashboard | Dialflow.ai" : "Admin Dashboard | Dialflow.ai";
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
+    if (location.pathname.includes("/manage-admins")) {
+      setActiveView("manage-admins");
+    } else if (location.pathname.includes("/audit-logs")) {
+      setActiveView("audit-logs");
+    } else if (location.pathname === "/super-admin" || location.pathname === "/admin") {
+      setActiveView("overview");
+    }
+  }, [location.pathname]);
 
   const analytics = useMemo(() => {
     const totalCalls = adminSummary.totalCalls || 0;
@@ -365,6 +451,18 @@ const AdminDashboard = () => {
 
     return agents;
   }, [agents, allAgents]);
+
+  const pendingDowntimeRequests = useMemo(
+    () => downtimeRequests.filter((request) => request.status === "pending"),
+    [downtimeRequests]
+  );
+
+  const activeDowntimeRequests = useMemo(
+    () => downtimeRequests.filter((request) => request.status === "approved"),
+    [downtimeRequests]
+  );
+
+  const latestDowntimeNotification = downtimeNotifications[0];
 
   const dispositions = useMemo(
     () => Array.from(new Set(responses.map((item) => item.disposition).filter(Boolean))).sort(),
@@ -724,6 +822,12 @@ const AdminDashboard = () => {
     employeeId: timeReportAgent,
   });
 
+  const buildDowntimeReportParams = () => ({
+    dateFrom: downtimeReportDateFrom,
+    dateTo: downtimeReportDateTo,
+    employeeId: downtimeReportAgent,
+  });
+
   const buildRankingReportParams = () => ({
     startDate: rankingReportDateFrom,
     endDate: rankingReportDateTo,
@@ -787,14 +891,58 @@ const AdminDashboard = () => {
     }
   };
 
+  const loadManagedAdmins = async () => {
+    if (!isSuperAdmin || !token) return;
+
+    try {
+      const data = await getManagedAdmins(token);
+      setManagedAdmins(data.admins || []);
+      setManagedAdminSummary(data.summary || {
+        totalAdmins: 0,
+        activeAdmins: 0,
+        totalAgents: 0,
+        onlineAgents: 0,
+      });
+    } catch (error) {
+      setFeedback(error.message || "Unable to load admins.");
+    }
+  };
+
+  const loadAuditLogs = async () => {
+    if (!isSuperAdmin || !token) return;
+
+    try {
+      const data = await getAuditLogs(token, auditFilters);
+      setAuditLogs(data.logs || []);
+    } catch (error) {
+      setFeedback(error.message || "Unable to load Admin History.");
+    }
+  };
+
+  useEffect(() => {
+    if (activeView === "manage-admins") {
+      loadManagedAdmins();
+    }
+
+    if (activeView === "audit-logs") {
+      loadAuditLogs();
+    }
+
+    if (activeView === "downtime") {
+      loadDowntimeRequests();
+    }
+  }, [activeView, auditFilters, isSuperAdmin, token]);
+
   useEffect(() => {
     if (token) {
       loadResponses();
       loadAgents();
+      loadDowntimeRequests();
 
       const interval = setInterval(() => {
         loadResponses();
         loadAgents();
+        loadDowntimeRequests();
       }, 5000); 
 
       return () => clearInterval(interval);
@@ -812,10 +960,66 @@ const AdminDashboard = () => {
     search,
   ]);
 
+  useEffect(() => {
+    if (!token || !isDowntimeApprover) {
+      return undefined;
+    }
+
+    const socket = createDowntimeSocket(token);
+
+    const mergeDowntimeRequest = (request) => {
+      if (!request?.id) {
+        return;
+      }
+
+      setDowntimeRequests((currentRequests) => {
+        const exists = currentRequests.some((item) => item.id === request.id);
+
+        if (!exists) {
+          return [request, ...currentRequests];
+        }
+
+        return currentRequests.map((item) => (item.id === request.id ? { ...item, ...request } : item));
+      });
+    };
+
+    const handleDowntimeEvent = (eventName) => (request) => {
+      mergeDowntimeRequest(request);
+
+      if (eventName === "new_downtime_request") {
+        setDowntimeNotifications((currentNotifications) => [
+          {
+            id: `${request.id}-${Date.now()}`,
+            request,
+          },
+          ...currentNotifications,
+        ].slice(0, 5));
+        setUnreadDowntimeCount((count) => count + 1);
+      }
+    };
+
+    const handlers = downtimeSocketEvents.map((eventName) => {
+      const handler = handleDowntimeEvent(eventName);
+      socket.on(eventName, handler);
+      return [eventName, handler];
+    });
+
+    return () => {
+      handlers.forEach(([eventName, handler]) => socket.off(eventName, handler));
+      socket.disconnect();
+    };
+  }, [token, isDowntimeApprover]);
+
   const handleLogout = () => {
     localStorage.clear();
     sessionStorage.clear();
     window.location.reload();
+  };
+
+  const openDowntimeNotifications = () => {
+    setUnreadDowntimeCount(0);
+    setActiveView("downtime");
+    navigate(isSuperAdmin ? "/super-admin" : "/admin");
   };
 
   const openLogoutConfirmation = () => {
@@ -947,6 +1151,167 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleDowntimeAction = async (request, action) => {
+    setDowntimeActionId(request.id);
+
+    try {
+      if (action === "approve") {
+        await approveDowntimeRequest(request.id, token);
+        setFeedback("Downtime request approved. Duration starts now.");
+      } else if (action === "reject") {
+        await rejectDowntimeRequest(request.id, token);
+        setFeedback("Downtime request rejected.");
+      } else if (action === "resolve") {
+        await resolveDowntimeRequest(request.id, token);
+        setFeedback("Downtime resolved.");
+      }
+
+      await loadDowntimeRequests();
+    } catch (error) {
+      setFeedback(error.message || "Downtime action failed.");
+    } finally {
+      setDowntimeActionId(null);
+    }
+  };
+
+  const openCreateAdmin = () => {
+    setSelectedAdmin(null);
+    setAdminForm({ name: "", employeeId: "", email: "", password: "", role: "admin", status: "active" });
+    setAdminModalMode("create");
+  };
+
+  const loadDowntimeRequests = async () => {
+    setIsDowntimeLoading(true);
+    try {
+      const data = await getDowntimeRequests(token);
+      setDowntimeRequests(data.requests || []);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to load downtime requests.");
+    } finally {
+      setIsDowntimeLoading(false);
+    }
+  };
+
+  const loadDowntimeReportRows = async () => {
+    setIsDowntimeReportLoading(true);
+    try {
+      const data = await getDowntimeReport(token, buildDowntimeReportParams());
+      setDowntimeReportRecords(data.records || []);
+      setDowntimeReportGenerated(true);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to generate downtime report.");
+    } finally {
+      setIsDowntimeReportLoading(false);
+    }
+  };
+
+  const openEditAdmin = (admin) => {
+    setSelectedAdmin(admin);
+    setAdminForm({
+      name: admin.name || "",
+      employeeId: admin.employeeId || "",
+      email: admin.email || "",
+      password: "",
+      role: admin.role || "admin",
+      status: admin.status || "active",
+    });
+    setAdminModalMode("edit");
+  };
+
+  const closeAdminModal = () => {
+    if (isAdminActionLoading) return;
+    setAdminModalMode("");
+    setSelectedAdmin(null);
+    setAdminForm({ name: "", employeeId: "", email: "", password: "", role: "admin", status: "active" });
+  };
+
+  const saveManagedAdmin = async (event) => {
+    event.preventDefault();
+
+    if (!adminForm.name.trim() || !adminForm.email.trim() || (adminModalMode === "create" && (!adminForm.employeeId.trim() || !adminForm.password))) {
+      setFeedback("Full Name, Employee ID, Email, and Password are required.");
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminForm.email.trim())) {
+      setFeedback("Valid email is required.");
+      return;
+    }
+
+    setIsAdminActionLoading(true);
+
+    try {
+      const cleanName = adminForm.name.trim();
+      const cleanEmail = adminForm.email.trim();
+      const cleanPassword = adminForm.password.trim();
+
+      if (adminModalMode === "create") {
+        await createManagedAdmin(
+          {
+            name: cleanName,
+            employee_id: adminForm.employeeId.trim(),
+            email: cleanEmail,
+            password: cleanPassword,
+            role: adminForm.role || "admin",
+          },
+          token
+        );
+        setFeedback("Admin created successfully.");
+      } else if (selectedAdmin) {
+        const payload = {
+          name: cleanName,
+          email: cleanEmail,
+          status: adminForm.status,
+        };
+
+        if (cleanPassword) {
+          payload.password = cleanPassword;
+        }
+
+        await updateManagedAdmin(
+          selectedAdmin.id,
+          payload,
+          token
+        );
+        setFeedback("Admin updated successfully.");
+      }
+
+      setAdminModalMode("");
+      setSelectedAdmin(null);
+      setAdminForm({ name: "", employeeId: "", email: "", password: "", role: "admin", status: "active" });
+      await loadManagedAdmins();
+    } catch (error) {
+      setFeedback(error.message || "Admin action failed.");
+    } finally {
+      setIsAdminActionLoading(false);
+    }
+  };
+
+  const deleteManagedAdminAccount = async (admin) => {
+    const confirmed = window.confirm(`Delete admin ${admin.name}?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteManagedAdmin(admin.id, token);
+      setFeedback("Admin deleted successfully.");
+      await loadManagedAdmins();
+    } catch (error) {
+      setFeedback(error.message || "Unable to delete admin.");
+    }
+  };
+
+  const forceLogoutManagedAdminAccount = async (admin) => {
+    try {
+      await forceLogoutManagedAdmin(admin.id, token);
+      setFeedback("Admin force logged out successfully.");
+      await loadManagedAdmins();
+    } catch (error) {
+      setFeedback(error.message || "Unable to force logout admin.");
+    }
+  };
+
   const clearResponseFilters = () => {
     setSearch("");
     setStatusFilter("all");
@@ -1070,6 +1435,18 @@ const AdminDashboard = () => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+
+    if (isSuperAdmin) {
+      createAuditLog(
+        {
+          action: "report_download",
+          target: `${reportType} ${format === "excel" ? "Excel" : "CSV"} Report`,
+          targetType: "report",
+          metadata: { reportType, format, rows: rowsForExport.length },
+        },
+        token
+      ).catch(() => {});
+    }
   };
 
   const printReport = async () => {
@@ -1222,6 +1599,187 @@ const AdminDashboard = () => {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+
+    if (isSuperAdmin) {
+      createAuditLog(
+        {
+          action: "ranking_export",
+          target: "Ranking Conversion CSV",
+          targetType: "ranking",
+          metadata: { rows: rankingReportRows.length },
+        },
+        token
+      ).catch(() => {});
+    }
+  };
+
+  const auditAdminOptions = useMemo(
+    () => Array.from(new Set(auditLogs.map((log) => log.adminName).filter(Boolean))).sort(),
+    [auditLogs]
+  );
+
+  const auditActionOptions = [
+    "agent_edit",
+    "agent_delete",
+    "agent_logout",
+    "admin_edit",
+    "admin_delete",
+    "report_download",
+    "ranking_export",
+  ];
+
+  const formatAuditAction = (action) =>
+    String(action || "")
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const exportAuditLogsCsv = () => {
+    if (!auditLogs.length) {
+      setFeedback("No Admin History match these filters.");
+      return;
+    }
+
+    const headers = ["Admin Name", "Action", "Target", "Date", "Time"];
+    const escapeCsv = (value) => {
+      const text = value === null || value === undefined ? "" : String(value);
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = auditLogs.map((log) =>
+      [
+        log.adminName,
+        log.actionLabel || formatAuditAction(log.action),
+        log.target,
+        formatReportDateOnly(log.createdAt),
+        formatTimeOnly(log.createdAt),
+      ]
+        .map(escapeCsv)
+        .join(",")
+    );
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadDowntimeReport = () => {
+    if (!downtimeReportRecords.length) {
+      setFeedback("No downtime rows match these filters.");
+      return;
+    }
+
+    const headers = [
+      "Agent Name",
+      "Employee ID",
+      "Date",
+      "Issue Type",
+      "Comment",
+      "Approved By",
+      "Start Time",
+      "End Time",
+      "Duration",
+    ];
+    const escapeCsv = (value) => {
+      const text = value === null || value === undefined ? "" : String(value);
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = downtimeReportRecords.map((row) =>
+      [
+        row.agentName,
+        row.employeeId,
+        formatReportDateOnly(row.requestedAt),
+        row.issueType,
+        row.comment,
+        row.approvedByName || "NA",
+        formatDateTime(row.approvedAt),
+        formatDateTime(row.resolvedAt),
+        formatDurationHuman(row.durationSeconds || row.runningDurationSeconds),
+      ]
+        .map(escapeCsv)
+        .join(",")
+    );
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `downtime-report-${downtimeReportDateFrom}-to-${downtimeReportDateTo}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportAuditLogsPdf = () => {
+    if (!auditLogs.length) {
+      setFeedback("No Admin History match these filters.");
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=1100,height=800");
+    if (!printWindow) return;
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Dialflow.ai Admin History</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
+            h1 { margin-bottom: 4px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 12px; }
+            th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+            th { background: #f3f4f6; }
+          </style>
+        </head>
+        <body>
+          <h1>Dialflow.ai Admin History</h1>
+          <div style="color:#6b7280;margin-bottom:6px;">Powered by Dhritii.ai</div>
+          <div>${auditLogs.length} records</div>
+          <table>
+            <thead>
+              <tr><th>Admin Name</th><th>Action</th><th>Target</th><th>Date</th><th>Time</th></tr>
+            </thead>
+            <tbody>
+              ${auditLogs
+                .map(
+                  (log) => `
+                    <tr>
+                      <td>${escapeHtml(log.adminName)}</td>
+                      <td>${escapeHtml(log.actionLabel || formatAuditAction(log.action))}</td>
+                      <td>${escapeHtml(log.target)}</td>
+                      <td>${escapeHtml(formatReportDateOnly(log.createdAt))}</td>
+                      <td>${escapeHtml(formatTimeOnly(log.createdAt))}</td>
+                    </tr>
+                  `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  const handleNavClick = (id) => {
+    setActiveView(id);
+
+    if (isSuperAdmin) {
+      if (id === "manage-admins") {
+        navigate("/super-admin/manage-admins");
+      } else if (id === "audit-logs") {
+        navigate("/super-admin/audit-logs");
+      } else {
+        navigate("/super-admin");
+      }
+    }
   };
 
   const buildTimeReportTableRows = () =>
@@ -1234,13 +1792,14 @@ const AdminDashboard = () => {
             <td>${escapeHtml(formatReportDateOnly(item.login_time))}</td>
             <td>${escapeHtml(formatTimeOnly(item.login_time))}</td>
             <td>${escapeHtml(formatTimeOnly(item.logout_time))}</td>
+            <td>${escapeHtml(item.break_number || "")}</td>
+            <td>${escapeHtml(item.break_reason || "")}</td>
             <td>${escapeHtml(formatTimeOnly(item.break_start_time))}</td>
             <td>${escapeHtml(formatTimeOnly(item.break_end_time))}</td>
-            <td>${escapeHtml(item.break_reason || "")}</td>
+            <td>${escapeHtml(formatDurationHuman(item.break_duration))}</td>
             <td>${escapeHtml(formatDurationHuman(item.total_login_duration))}</td>
             <td>${escapeHtml(formatDurationHuman(item.staff_time_duration))}</td>
             <td>${escapeHtml(formatDurationHuman(item.total_break_duration))}</td>
-            <td>${escapeHtml(item.break_count)}</td>
           </tr>
         `
       )
@@ -1277,7 +1836,7 @@ const AdminDashboard = () => {
         <body>
           <h1>Dialflow.ai Session and Break Time Report</h1>
           <div style="color:#6b7280;margin-bottom:6px;">Powered by Dhritii.ai</div>
-          <div>${timeReportDateFrom} to ${timeReportDateTo} | ${timeReportRecords.length} sessions</div>
+          <div>${timeReportDateFrom} to ${timeReportDateTo} | ${timeReportRecords.length} break rows</div>
           <div class="kpis">
             <div class="kpi"><div class="label">Total Login Time</div><div class="value">${formatDurationHuman(timeReportSummary.totalLoginDuration)}</div></div>
             <div class="kpi"><div class="label">Total Staff Time</div><div class="value">${formatDurationHuman(timeReportSummary.staffTimeDuration)}</div></div>
@@ -1288,9 +1847,8 @@ const AdminDashboard = () => {
             <thead>
               <tr>
                 <th>Agent Name</th><th>Employee ID</th><th>Login Date</th><th>Login Time</th><th>Logout Time</th>
-                <th>Break Start Time</th><th>Break End Time</th>
-                <th>Break Reason</th>
-                <th>Total Login Time</th><th>Total Staff Time</th><th>Break Time</th><th>Break Count</th>
+                <th>Break #</th><th>Break Reason</th><th>Break Start</th><th>Break End</th><th>Break Duration</th>
+                <th>Total Login</th><th>Total Staff</th><th>Total Break Time</th>
               </tr>
             </thead>
             <tbody>${buildTimeReportTableRows()}</tbody>
@@ -1612,7 +2170,7 @@ const AdminDashboard = () => {
                 {user.name?.slice(0, 2).toUpperCase() || "AD"}
               </div>
               <div style={{ marginTop: "16px", fontSize: "18px", fontWeight: 700 }}>{user.name || "Admin"}</div>
-              <div style={{ marginTop: "6px", color: "#aaa3c2" }}>Admin | Team Lead</div>
+              <div style={{ marginTop: "6px", color: "#aaa3c2" }}>{isSuperAdmin ? "Super Admin | Advanced Controls" : "Admin | Team Lead"}</div>
               <div
                 style={{
                   display: "inline-flex",
@@ -1624,8 +2182,61 @@ const AdminDashboard = () => {
                   background: "rgba(255, 208, 45, 0.1)",
                 }}
               >
-                Admin
+                {isSuperAdmin ? "Super Admin" : "Admin"}
               </div>
+              {isDowntimeApprover ? (
+                <button
+                  type="button"
+                  onClick={openDowntimeNotifications}
+                  title="Open Downtime Requests"
+                  style={{
+                    marginTop: "14px",
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "12px",
+                    padding: "11px 12px",
+                    borderRadius: "10px",
+                    border: "1px solid rgba(255, 208, 45, 0.42)",
+                    background: unreadDowntimeCount ? "rgba(255, 208, 45, 0.14)" : "rgba(255, 255, 255, 0.035)",
+                    color: "#f4f0ff",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                    <span aria-hidden="true" style={{ fontSize: "18px", lineHeight: 1 }}>!</span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: "14px", fontWeight: 800 }}>Downtime Alerts</span>
+                      <span style={{ display: "block", marginTop: "4px", color: "#aaa3c2", fontSize: "12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {latestDowntimeNotification?.request
+                          ? `${latestDowntimeNotification.request.agentName || "Agent"} | ${latestDowntimeNotification.request.issueType}`
+                          : "No new requests"}
+                      </span>
+                    </span>
+                  </span>
+                  {unreadDowntimeCount ? (
+                    <span
+                      style={{
+                        minWidth: "24px",
+                        height: "24px",
+                        padding: "0 7px",
+                        borderRadius: "999px",
+                        display: "grid",
+                        placeItems: "center",
+                        background: "#ffd02d",
+                        color: "#18131f",
+                        fontSize: "12px",
+                        fontWeight: 900,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {unreadDowntimeCount > 9 ? "9+" : unreadDowntimeCount}
+                    </span>
+                  ) : null}
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -1636,17 +2247,25 @@ const AdminDashboard = () => {
           <nav>
             {[
               ["overview", "Overview", "grid"],
+               ...(isSuperAdmin
+                ? [
+                    ["manage-admins", "Manage Admins", "user"],
+                    ["audit-logs", "Admin History", "list"],
+                  ]
+                : []),
               ["analytics", "Analytics", "chart"],
-              ["ranking", "Ranking", "chart"],
-              ["responses", "All responses", "list"],
+              ["ranking", "Rankings", "chart"],
+              ["responses", "All Responses", "list"],
+              ["downtime", "Downtime Requests", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
+
             ].map(([id, label, icon]) => (
               <button
                 type="button"
                 key={label}
                 className={activeView === id ? "crm-nav-item is-active" : "crm-nav-item"}
-                onClick={() => setActiveView(id)}
+                onClick={() => handleNavClick(id)}
                 style={{
                   width: "100%",
                   display: "flex",
@@ -1691,7 +2310,130 @@ const AdminDashboard = () => {
         </aside>
 
         <main className="admin-main admin-scroll" style={{ padding: "32px", overflowX: "auto" }}>
-          {activeView === "ranking" ? (
+          {activeView === "manage-admins" && isSuperAdmin ? (
+            <>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Manage Admins</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    Admin Dashboard controls with super admin account governance
+                  </div>
+                </div>
+                <button type="button" onClick={openCreateAdmin} style={{ ...ghostButton, background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)" }}>
+                  Create Admin
+                </button>
+              </div>
+
+              <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+                {[
+                  ["TOTAL ADMINS", managedAdminSummary.totalAdmins, "Admin accounts", "#a855f7"],
+                  ["ACTIVE ADMINS", managedAdminSummary.activeAdmins, "Currently online", "#35e5a7"],
+                  ["TOTAL AGENTS", managedAdminSummary.totalAgents, "Managed users", "#27d8ff"],
+                  ["ONLINE AGENTS", managedAdminSummary.onlineAgents, "Live agent sessions", "#ffd02d"],
+                ].map(([title, value, note, accent]) => (
+                  <article key={title} className="admin-hover-card" style={{ ...panel, padding: "22px 24px", borderTop: `3px solid ${accent}`, minHeight: "150px" }}>
+                    <div style={{ color: "#8f98b7", fontSize: "15px", lineHeight: 1.08 }}>{title}</div>
+                    <div style={{ marginTop: "14px", color: accent, fontSize: "34px", lineHeight: 1 }}>{value}</div>
+                    <div style={{ marginTop: "12px", color: "#9da6c3", fontSize: "14px" }}>{note}</div>
+                  </article>
+                ))}
+              </section>
+
+              <section className="admin-agent-grid" style={{ marginTop: "34px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "22px" }}>
+                {managedAdmins.map((admin) => {
+                  const tone = statusTone(admin.status);
+                  return (
+                    <article key={admin.id} className="admin-hover-card" style={{ ...panel, padding: "26px", minHeight: "260px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", alignItems: "flex-start" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <h2 style={{ margin: 0, fontSize: "22px" }}>{admin.name}</h2>
+                          <div style={{ marginTop: "8px", color: "#8f98b7" }}>{admin.employeeId}</div>
+                        </div>
+                        <span style={{ padding: "7px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}`, fontSize: "12px", fontWeight: 800 }}>
+                          {admin.status}
+                        </span>
+                      </div>
+                      <div className="admin-mini-grid" style={{ marginTop: "22px", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
+                        {[
+                          ["Email", admin.email || "NA"],
+                          ["Role", admin.role],
+                          ["Created", formatDateTime(admin.createdAt)],
+                          ["Last Active", formatDateTime(admin.lastActiveAt)],
+                        ].map(([label, value]) => (
+                          <div key={label} style={{ border: "1px solid rgba(122, 73, 255, 0.22)", borderRadius: "12px", padding: "12px", background: "rgba(255,255,255,0.025)" }}>
+                            <div style={{ color: "#7d849f", fontSize: "12px" }}>{label}</div>
+                            <div style={{ marginTop: "6px", color: "#f4f0ff", fontSize: "14px", overflowWrap: "anywhere" }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ marginTop: "22px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                        <button type="button" onClick={() => openEditAdmin(admin)} style={{ ...ghostButton, padding: "10px 14px", fontSize: "14px" }}>Edit</button>
+                        <button type="button" onClick={() => deleteManagedAdminAccount(admin)} style={{ ...ghostButton, padding: "10px 14px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>Delete</button>
+                        <button type="button" onClick={() => forceLogoutManagedAdminAccount(admin)} style={{ ...ghostButton, padding: "10px 14px", fontSize: "14px", color: "#ffb45c", borderColor: "rgba(255, 180, 92, 0.42)" }}>Force Logout</button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {!managedAdmins.length ? (
+                  <div className="admin-empty-state" style={{ ...panel, padding: "24px" }}>No admins found.</div>
+                ) : null}
+              </section>
+            </>
+          ) : activeView === "audit-logs" && isSuperAdmin ? (
+            <>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Admin History</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    Enterprise activity trail for protected admin operations
+                  </div>
+                </div>
+                <div className="admin-toolbar-actions" style={{ display: "flex", gap: "12px" }}>
+                  <button type="button" onClick={exportAuditLogsCsv} style={ghostButton}>CSV Download</button>
+                  <button type="button" onClick={exportAuditLogsPdf} style={ghostButton}>PDF Download</button>
+                </div>
+              </div>
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "24px" }}>
+                <div className="admin-filter-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "14px" }}>
+                  <input style={input} type="date" value={auditFilters.startDate} onChange={(event) => setAuditFilters((current) => ({ ...current, startDate: event.target.value }))} aria-label="Start Date" />
+                  <input style={input} type="date" value={auditFilters.endDate} onChange={(event) => setAuditFilters((current) => ({ ...current, endDate: event.target.value }))} aria-label="End Date" />
+                  <select className="admin-select" style={input} value={auditFilters.admin} onChange={(event) => setAuditFilters((current) => ({ ...current, admin: event.target.value }))}>
+                    <option value="all">Admin Filter</option>
+                    {auditAdminOptions.map((admin) => <option key={admin} value={admin}>{admin}</option>)}
+                  </select>
+                  <select className="admin-select" style={input} value={auditFilters.action} onChange={(event) => setAuditFilters((current) => ({ ...current, action: event.target.value }))}>
+                    <option value="all">Action Filter</option>
+                    {auditActionOptions.map((action) => <option key={action} value={action}>{formatAuditAction(action)}</option>)}
+                  </select>
+                </div>
+              </section>
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "28px", padding: "26px", overflowX: "auto" }}>
+                <table className="admin-polished-table" style={{ width: "100%", minWidth: "920px", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ color: "#8f98b7", textAlign: "left", fontSize: "13px" }}>
+                      {["Admin Name", "Action", "Target", "Date", "Time"].map((header) => (
+                        <th key={header} style={{ padding: "14px 12px", borderBottom: "1px solid rgba(122,73,255,0.22)" }}>{header}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td style={{ padding: "15px 12px", borderBottom: "1px solid rgba(122,73,255,0.16)" }}>{log.adminName}</td>
+                        <td style={{ padding: "15px 12px", borderBottom: "1px solid rgba(122,73,255,0.16)", color: "#d9b7ff" }}>{log.actionLabel || formatAuditAction(log.action)}</td>
+                        <td style={{ padding: "15px 12px", borderBottom: "1px solid rgba(122,73,255,0.16)", color: "#cdd3ea" }}>{log.target || "NA"}</td>
+                        <td style={{ padding: "15px 12px", borderBottom: "1px solid rgba(122,73,255,0.16)" }}>{formatReportDateOnly(log.createdAt)}</td>
+                        <td style={{ padding: "15px 12px", borderBottom: "1px solid rgba(122,73,255,0.16)" }}>{formatTimeOnly(log.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!auditLogs.length ? <div className="admin-empty-state" style={{ marginTop: "18px" }}>No Admin History match these filters.</div> : null}
+              </section>
+            </>
+          ) : activeView === "ranking" ? (
             <AdminRanking token={token} />
           ) : activeView === "analytics" ? (
             <>
@@ -1869,7 +2611,7 @@ const AdminDashboard = () => {
             <>
               <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start" }}>
                 <div>
-                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>All responses</h1>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>All Responses</h1>
                   <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
                     Complete call log | Sortable | Filterable
                   </div>
@@ -2031,6 +2773,114 @@ const AdminDashboard = () => {
                     </button>
                   </div>
                 </div>
+              </section>
+            </>
+          ) : activeView === "downtime" ? (
+            <>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Downtime Requests</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    System issue approvals | Separate from break management
+                  </div>
+                </div>
+                <button type="button" onClick={loadDowntimeRequests} disabled={isDowntimeLoading} style={ghostButton}>
+                  {isDowntimeLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              <section className="admin-kpi-grid" style={{ marginTop: "32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px" }}>
+                {[
+                  ["PENDING", pendingDowntimeRequests.length, "#ffd02d"],
+                  ["ACTIVE", activeDowntimeRequests.length, "#27d8ff"],
+                  ["RESOLVED", downtimeRequests.filter((item) => item.status === "resolved").length, "#35e5a7"],
+                  ["REJECTED", downtimeRequests.filter((item) => item.status === "rejected").length, "#ff7685"],
+                ].map(([title, value, accent]) => (
+                  <article key={title} style={{ ...panel, padding: "22px 24px", borderTop: `3px solid ${accent}`, minHeight: "140px" }}>
+                    <div style={{ color: "#8f98b7", fontSize: "15px" }}>{title}</div>
+                    <div style={{ marginTop: "14px", color: accent, fontSize: "38px", lineHeight: 1 }}>{value}</div>
+                  </article>
+                ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "26px", overflowX: "auto" }}>
+                <h2 style={{ margin: 0, fontSize: "22px" }}>Pending Requests</h2>
+                <table className="admin-polished-table" style={{ width: "100%", minWidth: "1120px", marginTop: "20px", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                      {["AGENT NAME", "EMPLOYEE ID", "DATE", "ISSUE TYPE", "COMMENT", "REQUESTED AT", "STATUS", "ACTIONS"].map((heading) => (
+                        <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingDowntimeRequests.map((request) => (
+                      <tr key={request.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                        <td style={{ padding: "14px 12px" }}>{request.agentName}</td>
+                        <td style={{ padding: "14px 12px" }}>{request.employeeId}</td>
+                        <td style={{ padding: "14px 12px" }}>{formatReportDateOnly(request.requestedAt)}</td>
+                        <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{request.issueType}</td>
+                        <td style={{ padding: "14px 12px", maxWidth: "300px", color: "#cdd3ea" }}>{request.comment}</td>
+                        <td style={{ padding: "14px 12px" }}>{formatDateTime(request.requestedAt)}</td>
+                        <td style={{ padding: "14px 12px", color: "#ffd02d" }}>{request.status}</td>
+                        <td style={{ padding: "14px 12px" }}>
+                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            <button type="button" onClick={() => handleDowntimeAction(request, "approve")} disabled={downtimeActionId === request.id} style={{ ...ghostButton, padding: "8px 12px", fontSize: "14px", color: "#35e5a7", borderColor: "rgba(53, 229, 167, 0.42)" }}>
+                              Approve
+                            </button>
+                            <button type="button" onClick={() => handleDowntimeAction(request, "reject")} disabled={downtimeActionId === request.id} style={{ ...ghostButton, padding: "8px 12px", fontSize: "14px", color: "#ff7685", borderColor: "rgba(255, 118, 133, 0.42)" }}>
+                              Reject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!pendingDowntimeRequests.length ? (
+                      <tr>
+                        <td colSpan="8" style={{ padding: "22px 12px" }}>
+                          <div className="admin-empty-state">No pending downtime requests.</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "26px", overflowX: "auto" }}>
+                <h2 style={{ margin: 0, fontSize: "22px" }}>Active Downtime</h2>
+                <table className="admin-polished-table" style={{ width: "100%", minWidth: "980px", marginTop: "20px", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                      {["AGENT NAME", "EMPLOYEE ID", "ISSUE TYPE", "START TIME", "RUNNING DURATION", "STATUS", "ACTION"].map((heading) => (
+                        <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeDowntimeRequests.map((request) => (
+                      <tr key={request.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                        <td style={{ padding: "14px 12px" }}>{request.agentName}</td>
+                        <td style={{ padding: "14px 12px" }}>{request.employeeId}</td>
+                        <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{request.issueType}</td>
+                        <td style={{ padding: "14px 12px" }}>{formatDateTime(request.approvedAt)}</td>
+                        <td style={{ padding: "14px 12px", color: "#27d8ff" }}>{formatDurationHuman(request.runningDurationSeconds)}</td>
+                        <td style={{ padding: "14px 12px", color: "#27d8ff" }}>{request.status}</td>
+                        <td style={{ padding: "14px 12px" }}>
+                          <button type="button" onClick={() => handleDowntimeAction(request, "resolve")} disabled={downtimeActionId === request.id} style={{ ...ghostButton, padding: "8px 12px", fontSize: "14px", color: "#ffb45c", borderColor: "rgba(255, 180, 92, 0.42)" }}>
+                            Resolve / Stop Downtime
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {!activeDowntimeRequests.length ? (
+                      <tr>
+                        <td colSpan="7" style={{ padding: "22px 12px" }}>
+                          <div className="admin-empty-state">No active downtime.</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
               </section>
             </>
           ) : activeView === "agents" ? (
@@ -2675,7 +3525,7 @@ const AdminDashboard = () => {
                         Session & Break Report Preview
                       </h2>
                       <div style={{ marginTop: "8px", color: "#9da6c3" }}>
-                        {timeReportDateFrom} to {timeReportDateTo} | {timeReportRecords.length} sessions
+                        {timeReportDateFrom} to {timeReportDateTo} | {timeReportRecords.length} break rows
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
@@ -2706,7 +3556,7 @@ const AdminDashboard = () => {
                     <table className="admin-polished-table" style={{ width: "100%", minWidth: "1180px", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
-                          {["AGENT NAME", "EMPLOYEE ID", "LOGIN DATE", "LOGIN TIME", "LOGOUT TIME", "BREAK START", "BREAK END", "TOTAL LOGIN TIME", "TOTAL STAFF TIME", "BREAK TIME", "BREAK COUNT"].map((heading) => (
+                          {["AGENT NAME", "EMPLOYEE ID", "LOGIN DATE", "LOGIN TIME", "LOGOUT TIME", "BREAK #", "BREAK REASON", "BREAK START", "BREAK END", "BREAK DURATION", "TOTAL LOGIN", "TOTAL STAFF", "TOTAL BREAK TIME"].map((heading) => (
                             <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
                               {heading}
                             </th>
@@ -2715,24 +3565,140 @@ const AdminDashboard = () => {
                       </thead>
                       <tbody>
                         {timeReportRecords.slice(0, 10).map((item) => (
-                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                          <tr key={`${item.session_id}-${item.break_id || "no-break"}`} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
                             <td style={{ padding: "14px 12px" }}>{item.agent_name}</td>
                             <td style={{ padding: "14px 12px" }}>{item.employee_id}</td>
                             <td style={{ padding: "14px 12px" }}>{formatReportDateOnly(item.login_time)}</td>
                             <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.login_time)}</td>
                             <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.logout_time)}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.break_number || ""}</td>
+                            <td style={{ padding: "14px 12px", color: "#ffcf8a", minWidth: "180px" }}>{item.break_reason || ""}</td>
                             <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.break_start_time)}</td>
                             <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.break_end_time)}</td>
+                            <td style={{ padding: "14px 12px", color: "#ffb45c" }}>{formatDurationHuman(item.break_duration)}</td>
                             <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{formatDurationHuman(item.total_login_duration)}</td>
                             <td style={{ padding: "14px 12px", color: "#35e5a7" }}>{formatDurationHuman(item.staff_time_duration)}</td>
                             <td style={{ padding: "14px 12px", color: "#ffb45c" }}>{formatDurationHuman(item.total_break_duration)}</td>
-                            <td style={{ padding: "14px 12px" }}>{item.break_count}</td>
                           </tr>
                         ))}
                         {!timeReportRecords.length ? (
                           <tr>
-                            <td colSpan="11" style={{ padding: "22px 12px" }}>
+                            <td colSpan="13" style={{ padding: "22px 12px" }}>
                               <div className="admin-empty-state">No session or break rows match these filters.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "24px", padding: "32px", maxWidth: "930px" }}>
+                <div className="admin-section-heading">
+                  <h2 style={{ margin: 0, fontSize: "24px" }}>Downtime Report</h2>
+                  <span style={{ color: "#7d849f", fontSize: "14px" }}>Approved system downtime records</span>
+                </div>
+                <div style={{ marginTop: "24px", borderTop: "1px solid rgba(122, 73, 255, 0.28)" }} />
+                <div className="admin-filter-grid" style={{ marginTop: "26px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "18px", alignItems: "end" }}>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE FROM
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={downtimeReportDateFrom}
+                      onChange={(event) => {
+                        setDowntimeReportDateFrom(event.target.value);
+                        setDowntimeReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    DATE TO
+                    <input
+                      type="date"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={downtimeReportDateTo}
+                      onChange={(event) => {
+                        setDowntimeReportDateTo(event.target.value);
+                        setDowntimeReportGenerated(false);
+                      }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "12px", color: "#9da6c3", fontSize: "17px", letterSpacing: "0.04em" }}>
+                    AGENT
+                    <select
+                      className="admin-select"
+                      style={{ ...input, fontSize: "22px", padding: "16px 18px" }}
+                      value={downtimeReportAgent}
+                      onChange={(event) => {
+                        setDowntimeReportAgent(event.target.value);
+                        setDowntimeReportGenerated(false);
+                      }}
+                    >
+                      <option value="all">All agents</option>
+                      {agents.map(([id, name]) => (
+                        <option key={id} value={id}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={loadDowntimeReportRows}
+                    disabled={isDowntimeReportLoading}
+                    style={{ ...ghostButton, minWidth: "190px", minHeight: "60px", fontSize: "19px", background: "rgba(39, 216, 255, 0.14)", borderColor: "rgba(39, 216, 255, 0.42)" }}
+                    className="admin-action-button"
+                  >
+                    {isDowntimeReportLoading ? "Generating..." : "Generate"}
+                  </button>
+                </div>
+              </section>
+
+              {downtimeReportGenerated ? (
+                <section className="admin-soft-panel" style={{ ...panel, marginTop: "30px", padding: "30px 34px", maxWidth: "930px" }}>
+                  <div className="admin-section-heading">
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: "24px" }}>Downtime Report Preview</h2>
+                      <div style={{ marginTop: "8px", color: "#9da6c3" }}>
+                        {downtimeReportDateFrom} to {downtimeReportDateTo} | {downtimeReportRecords.length} records
+                      </div>
+                    </div>
+                    <button type="button" onClick={downloadDowntimeReport} className="admin-action-button" style={ghostButton}>
+                      Download CSV
+                    </button>
+                  </div>
+
+                  <div className="admin-scroll" style={{ marginTop: "24px", overflowX: "auto", borderRadius: "12px", border: "1px solid rgba(122, 73, 255, 0.18)" }}>
+                    <table className="admin-polished-table" style={{ width: "100%", minWidth: "1180px", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                          {["AGENT NAME", "EMPLOYEE ID", "DATE", "ISSUE TYPE", "COMMENT", "APPROVED BY", "START TIME", "END TIME", "DURATION"].map((heading) => (
+                            <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {downtimeReportRecords.slice(0, 10).map((item) => (
+                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            <td style={{ padding: "14px 12px" }}>{item.agentName}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.employeeId}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatReportDateOnly(item.requestedAt)}</td>
+                            <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{item.issueType}</td>
+                            <td style={{ padding: "14px 12px", maxWidth: "260px" }}>{item.comment}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.approvedByName || "NA"}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatDateTime(item.approvedAt)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatDateTime(item.resolvedAt)}</td>
+                            <td style={{ padding: "14px 12px", color: "#35e5a7" }}>{formatDurationHuman(item.durationSeconds || item.runningDurationSeconds)}</td>
+                          </tr>
+                        ))}
+                        {!downtimeReportRecords.length ? (
+                          <tr>
+                            <td colSpan="9" style={{ padding: "22px 12px" }}>
+                              <div className="admin-empty-state">No downtime rows match these filters.</div>
                             </td>
                           </tr>
                         ) : null}
@@ -3249,6 +4215,39 @@ const AdminDashboard = () => {
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {adminModalMode ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, display: "grid", placeItems: "center", padding: "20px", background: "rgba(4, 3, 9, 0.72)" }}>
+          <form onSubmit={saveManagedAdmin} className="admin-modal" style={{ ...panel, width: "100%", maxWidth: "540px", padding: "26px", boxShadow: "0 28px 80px rgba(0,0,0,0.45)" }}>
+            <h2 style={{ margin: 0, fontSize: "22px" }}>{adminModalMode === "create" ? "Create Admin" : "Edit Admin"}</h2>
+            <div style={{ marginTop: "18px", display: "grid", gap: "14px" }}>
+              <input style={input} value={adminForm.name} onChange={(event) => setAdminForm((current) => ({ ...current, name: event.target.value }))} placeholder="Full Name" />
+              {adminModalMode === "create" ? (
+                <input style={input} value={adminForm.employeeId} onChange={(event) => setAdminForm((current) => ({ ...current, employeeId: event.target.value }))} placeholder="Employee ID" />
+              ) : null}
+              <input style={input} value={adminForm.email} onChange={(event) => setAdminForm((current) => ({ ...current, email: event.target.value }))} placeholder="Email" type="email" />
+              <input style={input} value={adminForm.password} onChange={(event) => setAdminForm((current) => ({ ...current, password: event.target.value }))} placeholder={adminModalMode === "create" ? "Password" : "Password reset (optional)"} type="password" />
+              <select className="admin-select" style={input} value={adminForm.role} onChange={(event) => setAdminForm((current) => ({ ...current, role: event.target.value }))} disabled>
+                <option value="admin">admin</option>
+              </select>
+              {adminModalMode === "edit" ? (
+                <select className="admin-select" style={input} value={adminForm.status} onChange={(event) => setAdminForm((current) => ({ ...current, status: event.target.value }))}>
+                  <option value="active">active</option>
+                  <option value="inactive">inactive</option>
+                </select>
+              ) : null}
+            </div>
+            <div style={{ marginTop: "22px", display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+              <button type="button" onClick={closeAdminModal} disabled={isAdminActionLoading} style={{ ...ghostButton, opacity: isAdminActionLoading ? 0.55 : 1 }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={isAdminActionLoading} style={{ ...ghostButton, background: "rgba(168, 85, 247, 0.18)", borderColor: "rgba(168, 85, 247, 0.5)", opacity: isAdminActionLoading ? 0.55 : 1 }}>
+                {isAdminActionLoading ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </form>
         </div>
       ) : null}
 

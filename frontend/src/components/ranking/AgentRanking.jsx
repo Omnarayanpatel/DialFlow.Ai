@@ -81,6 +81,30 @@ const StatPill = ({ value, color }) => (
   </span>
 );
 
+const formulaWeights = [
+  {
+    label: "Positive Calls",
+    weight: "50%",
+    note: "Highest Weight",
+    color: "#35e5a7",
+    glow: "rgba(53, 229, 167, 0.22)",
+  },
+  {
+    label: "Connected Calls",
+    weight: "30%",
+    note: "Medium Weight",
+    color: "#8b5cf6",
+    glow: "rgba(139, 92, 246, 0.24)",
+  },
+  {
+    label: "Total Calls",
+    weight: "20%",
+    note: "Base Contribution",
+    color: "#ffd02d",
+    glow: "rgba(255, 208, 45, 0.2)",
+  },
+];
+
 const PodiumSlot = ({ agent, order, index }) => {
   const config = {
     1: { height: 132, color: "#ffd02d", border: "rgba(255, 208, 45, 0.72)", rankLabel: "#1" },
@@ -231,6 +255,12 @@ const AgentRanking = ({ token, employeeId }) => {
             gap: 18px;
           }
 
+          .agent-ranking-formula-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+          }
+
           .agent-podium-stage {
             display: grid;
             grid-template-columns: repeat(3, minmax(92px, 1fr));
@@ -258,6 +288,10 @@ const AgentRanking = ({ token, employeeId }) => {
             }
 
             .agent-ranking-feature-grid {
+              grid-template-columns: 1fr;
+            }
+
+            .agent-ranking-formula-grid {
               grid-template-columns: 1fr;
             }
           }
@@ -324,6 +358,52 @@ const AgentRanking = ({ token, employeeId }) => {
       </div>
 
       {feedback ? <div style={{ marginTop: "16px", color: "#ff9aa7" }}>{feedback}</div> : null}
+
+      <section
+        style={{
+          ...panel,
+          marginTop: "24px",
+          padding: "24px",
+          background: "linear-gradient(180deg, rgba(31, 24, 58, 0.88), rgba(14, 12, 28, 0.94))",
+          borderColor: "rgba(168, 85, 247, 0.42)",
+          boxShadow: "0 18px 60px rgba(0, 0, 0, 0.28)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "18px", alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ color: "#8f98b7", fontSize: "13px", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Ranking Formula
+            </div>
+            <div style={{ marginTop: "10px", color: "#f4f0ff", fontSize: "22px", fontWeight: 800 }}>
+              Score = (Positive × 5) + (Connected × 3) + (Total Calls × 2)
+            </div>
+          </div>
+          <div style={{ maxWidth: "520px", color: "#b7bfd8", lineHeight: 1.55 }}>
+            Rankings are calculated using weighted performance metrics. Positive calls contribute the highest impact, followed by connected calls and total calls.
+          </div>
+        </div>
+
+        <div className="agent-ranking-formula-grid" style={{ marginTop: "20px" }}>
+          {formulaWeights.map((item) => (
+            <div
+              key={item.label}
+              style={{
+                padding: "16px",
+                borderRadius: "14px",
+                background: `linear-gradient(180deg, ${item.glow}, rgba(255,255,255,0.035))`,
+                border: `1px solid ${item.color}55`,
+                boxShadow: `0 0 28px ${item.glow}`,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center" }}>
+                <span style={{ color: item.color, fontSize: "15px", fontWeight: 800 }}>{item.label}</span>
+                <span style={{ color: item.color, fontSize: "22px", fontWeight: 900 }}>{item.weight}</span>
+              </div>
+              <div style={{ marginTop: "8px", color: "#d8d1ee", fontSize: "14px" }}>{item.note}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <section
         style={{

@@ -106,7 +106,7 @@ const mapLeaderboardRows = (rows) =>
 
 const getAdminLeaderboard = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!["admin", "super_admin"].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: "Admin access required" });
     }
 

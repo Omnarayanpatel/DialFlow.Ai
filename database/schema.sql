@@ -3,15 +3,99 @@ CREATE TABLE IF NOT EXISTS users (
   name VARCHAR(120) NOT NULL,
   password VARCHAR(255) NOT NULL,
   employee_id VARCHAR(50) UNIQUE NOT NULL,
+  email VARCHAR(160),
   zoho_id VARCHAR(100),
   role VARCHAR(20) NOT NULL DEFAULT 'agent',
   status VARCHAR(20) DEFAULT 'Offline',
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(160);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS zoho_id VARCHAR(100);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'Offline';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+  admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  admin_name VARCHAR(120) NOT NULL DEFAULT 'Unknown Admin',
+  admin_employee_id VARCHAR(50),
+  action VARCHAR(80) NOT NULL,
+  target VARCHAR(255),
+  target_type VARCHAR(80),
+  target_id INTEGER,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_id INTEGER;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_name VARCHAR(120) NOT NULL DEFAULT 'Unknown Admin';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_employee_id VARCHAR(50);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action VARCHAR(80);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target VARCHAR(255);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type VARCHAR(80);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id INTEGER;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE TABLE IF NOT EXISTS downtime_requests (
+  id SERIAL PRIMARY KEY,
+  agent_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  employee_id VARCHAR(50) NOT NULL,
+  issue_type VARCHAR(80) NOT NULL,
+  comment TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  approved_at TIMESTAMP,
+  approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  resolved_at TIMESTAMP,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS agent_id INTEGER;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS employee_id VARCHAR(50);
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS issue_type VARCHAR(80);
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS comment TEXT;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS approved_by INTEGER;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS duration_seconds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE downtime_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'downtime_requests' AND constraint_name = 'downtime_requests_status_check'
+  ) THEN
+    ALTER TABLE downtime_requests
+      ADD CONSTRAINT downtime_requests_status_check
+      CHECK (status IN ('pending', 'approved', 'rejected', 'resolved'))
+      NOT VALID;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'users' AND constraint_name = 'users_role_check'
+  ) THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_role_check
+      CHECK (role IN ('super_admin', 'admin', 'agent'))
+      NOT VALID;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id SERIAL PRIMARY KEY,
@@ -100,6 +184,12 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_responses_agent_created_at
   ON responses (employee_id, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+  ON audit_logs (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action
+  ON audit_logs (action);
+
 CREATE INDEX IF NOT EXISTS idx_responses_agent_created_date
   ON responses (employee_id, (created_at::date));
 
@@ -150,6 +240,16 @@ CREATE INDEX IF NOT EXISTS idx_agent_breaks_session_open
 
 CREATE INDEX IF NOT EXISTS idx_agent_breaks_user_start
   ON agent_breaks (user_id, break_start_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_downtime_requests_status_requested
+  ON downtime_requests (status, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_downtime_requests_employee_requested
+  ON downtime_requests (employee_id, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_downtime_requests_approved_active
+  ON downtime_requests (approved_at DESC)
+  WHERE status = 'approved' AND resolved_at IS NULL;
 
 DO $$
 BEGIN

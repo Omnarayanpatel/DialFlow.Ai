@@ -1,4 +1,5 @@
 const { withTransaction } = require("../config/db");
+const { logAuditEvent } = require("../services/audit.service");
 
 const closeActiveAgentSessionsSql = `
   UPDATE agent_sessions
@@ -15,7 +16,7 @@ const closeActiveAgentSessionsSql = `
 `;
 
 const requireAdmin = (req, res) => {
-  if (req.user.role !== "admin") {
+  if (!["admin", "super_admin"].includes(req.user.role)) {
     res.status(403).json({ success: false, message: "Admin access required" });
     return false;
   }
@@ -80,6 +81,18 @@ const forceLogoutAgent = async (req, res, next) => {
         [agentId]
       );
 
+      await logAuditEvent(
+        {
+          req,
+          action: "agent_logout",
+          target: agent.name,
+          targetType: "agent",
+          targetId: agentId,
+          metadata: { closedSessions: sessionResult.rowCount },
+        },
+        client
+      );
+
       return {
         agent,
         closedSessions: sessionResult.rowCount,
@@ -125,6 +138,20 @@ const forceLogoutAllAgents = async (req, res, next) => {
 
       await client.query(
         "UPDATE users SET status = 'offline', updated_at = CURRENT_TIMESTAMP WHERE role = 'agent'"
+      );
+
+      await logAuditEvent(
+        {
+          req,
+          action: "agent_logout",
+          target: "All active agents",
+          targetType: "agent",
+          metadata: {
+            closedSessions: sessionResult.rowCount,
+            affectedAgents: new Set(sessionResult.rows.map((row) => row.user_id)).size,
+          },
+        },
+        client
       );
 
       return {

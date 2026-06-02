@@ -30,6 +30,18 @@ export const apiRequest = async (path, options = {}) => {
   const data = await response.json();
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth/")) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      sessionStorage.removeItem("token");
+      sessionStorage.removeItem("user");
+      sessionStorage.setItem("authFeedback", "Session expired or revoked.");
+
+      if (window.location.pathname !== "/login") {
+        window.location.assign("/login");
+      }
+    }
+
     throw new Error(data.message || "Request failed");
   }
 
