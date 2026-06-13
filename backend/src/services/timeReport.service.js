@@ -117,6 +117,21 @@ const getTimeReportRows = async (queryParams = {}) => {
            0
          ) AS break_duration
        FROM agent_breaks b
+       WHERE LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
+     ),
+     session_break_totals AS (
+       SELECT
+         b.session_id,
+         COALESCE(SUM(
+           GREATEST(
+             EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+             0
+           )
+         ), 0)::int AS total_break_duration,
+         COUNT(*)::int AS break_count
+       FROM agent_breaks b
+       WHERE LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
+       GROUP BY b.session_id
      )
      SELECT
        sr.id,
@@ -127,20 +142,17 @@ const getTimeReportRows = async (queryParams = {}) => {
        sr.login_time,
        sr.logout_time,
        br.break_number,
-       CASE
-         WHEN LOWER(COALESCE(br.break_reason, '')) IN ('session', 'session break')
-           THEN COALESCE(NULLIF(TRIM(br.break_remark), ''), br.break_reason)
-         ELSE COALESCE(NULLIF(TRIM(br.break_reason), ''), NULLIF(TRIM(br.break_remark), ''))
-       END AS break_reason,
+       COALESCE(NULLIF(TRIM(br.break_reason), ''), NULLIF(TRIM(br.break_remark), '')) AS break_reason,
        br.break_start_time,
        br.break_end_time,
        COALESCE(br.break_duration, 0)::int AS break_duration,
-       GREATEST(sr.staff_time_duration - sr.session_total_break_duration, 0)::int AS total_login_duration,
-       sr.session_total_break_duration AS total_break_duration,
+       GREATEST(sr.staff_time_duration - COALESCE(sbt.total_break_duration, 0), 0)::int AS total_login_duration,
+       COALESCE(sbt.total_break_duration, 0)::int AS total_break_duration,
        sr.staff_time_duration,
-       COUNT(br.break_id) OVER (PARTITION BY sr.id)::int AS break_count
+       COALESCE(sbt.break_count, 0)::int AS break_count
      FROM session_rows sr
      LEFT JOIN break_rows br ON br.session_id = sr.id
+     LEFT JOIN session_break_totals sbt ON sbt.session_id = sr.id
      ORDER BY sr.agent_name ASC, sr.employee_id ASC, sr.login_time DESC, br.break_number ASC NULLS LAST`,
     params
   );

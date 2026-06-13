@@ -83,23 +83,12 @@ const getAgentDashboard = async (req, res, next) => {
                GREATEST(
                  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - login_time))::int,
                  0
-               )
-             ), 0)::int AS total_login_duration,
-             COALESCE(SUM(
-               GREATEST(
-                 EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - login_time))::int
-                   - total_break_duration
-                   - CASE
-                       WHEN break_start_time IS NOT NULL
-                         THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
-                       ELSE 0
-                     END,
-                 0
-               )
-             ), 0)::int AS active_session_duration,
+             )
+           ), 0)::int AS total_login_duration,
              COALESCE(SUM(
                CASE
                  WHEN break_start_time IS NOT NULL
+                   AND LOWER(TRIM(COALESCE(break_reason, ''))) NOT IN ('session', 'session break')
                    THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
                  ELSE 0
                END
@@ -115,37 +104,79 @@ const getAgentDashboard = async (req, res, next) => {
              MAX(break_end_time) AS break_end_time
            FROM active_sessions
          ),
+         active_break_totals AS (
+           SELECT
+             COALESCE(SUM(
+               GREATEST(
+                 EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+                 0
+               )
+             ), 0)::int AS active_break_duration
+           FROM agent_breaks b
+           INNER JOIN active_sessions s ON s.id = b.session_id
+           WHERE LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
+         ),
          today_metrics AS (
            SELECT
-             COALESCE(SUM(break_count), 0)::int AS break_count_today,
              COALESCE(SUM(
                GREATEST(
                  EXTRACT(EPOCH FROM (COALESCE(logout_time, CURRENT_TIMESTAMP) - login_time))::int,
                  0
                )
              ), 0)::int AS staff_time_today,
-             COALESCE(SUM(
-               total_break_duration + CASE
-                 WHEN logout_time IS NULL AND break_start_time IS NOT NULL
-                   THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
-                 ELSE 0
-               END
+             COALESCE((
+               SELECT COUNT(*)::int
+               FROM agent_breaks b
+               WHERE b.user_id = $1
+                 AND b.break_start_time::date = CURRENT_DATE
+                 AND LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
+             ), 0)::int AS break_count_today,
+             COALESCE((
+               SELECT SUM(
+                 GREATEST(
+                   EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+                   0
+                 )
+               )::int
+               FROM agent_breaks b
+               WHERE b.user_id = $1
+                 AND b.break_start_time::date = CURRENT_DATE
+                 AND LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
              ), 0)::int AS total_break_duration_today
            FROM agent_sessions
            WHERE user_id = $1
              AND login_time::date = CURRENT_DATE
+         ),
+         downtime_metrics AS (
+           SELECT
+             COALESCE(SUM(
+               GREATEST(
+                 EXTRACT(EPOCH FROM (
+                   LEAST(COALESCE(resolved_at, CURRENT_TIMESTAMP), CURRENT_DATE + INTERVAL '1 day')
+                     - GREATEST(approved_at, CURRENT_DATE)
+                 ))::int,
+                 0
+               )
+             ), 0)::int AS downtime_duration_today
+           FROM downtime_requests
+           WHERE employee_id = $2
+             AND status IN ('approved', 'resolved')
+             AND approved_at IS NOT NULL
+             AND approved_at < CURRENT_DATE + INTERVAL '1 day'
+             AND COALESCE(resolved_at, CURRENT_TIMESTAMP) >= CURRENT_DATE
          )
          SELECT
            am.login_time,
            GREATEST(
-             COALESCE(tm.staff_time_today, 0) - COALESCE(tm.total_break_duration_today, 0),
+           COALESCE(tm.staff_time_today, 0) - COALESCE(tm.total_break_duration_today, 0),
              0
            )::int AS total_login_duration_today,
-           COALESCE(am.active_session_duration, 0) AS total_login_duration,
+           GREATEST(COALESCE(am.total_login_duration, 0) - COALESCE(abt.active_break_duration, 0), 0)::int AS total_login_duration,
            COALESCE(am.total_login_duration, 0) AS active_session_duration,
            COALESCE(tm.break_count_today, 0) AS break_count_today,
            COALESCE(tm.total_break_duration_today, 0) AS total_break_duration_today,
            COALESCE(tm.staff_time_today, 0) AS staff_time_today,
+           COALESCE(dm.downtime_duration_today, 0) AS downtime_duration_today,
            COALESCE(am.current_break_duration, 0) AS current_break_duration,
            COALESCE(am.active_session_count, 0) AS active_session_count,
            am.break_reason,
@@ -166,7 +197,9 @@ const getAgentDashboard = async (req, res, next) => {
                AND created_at >= am.login_time
            ) AS calls_this_session
          FROM active_metrics am
-         CROSS JOIN today_metrics tm`,
+         CROSS JOIN active_break_totals abt
+         CROSS JOIN today_metrics tm
+         CROSS JOIN downtime_metrics dm`,
         [req.user.id, req.user.employeeId || ""]
       ),
       query(
@@ -208,6 +241,8 @@ const getAgentDashboard = async (req, res, next) => {
           breakCountToday: session.break_count_today || 0,
           totalBreakDurationToday: session.total_break_duration_today || 0,
           total_break_time: session.total_break_duration_today || 0,
+          downtimeDurationToday: session.downtime_duration_today || 0,
+          downtime_duration_today: session.downtime_duration_today || 0,
           staffTimeToday: session.staff_time_today || 0,
           staff_time: session.staff_time_today || 0,
           currentBreakDuration: session.current_break_duration || 0,

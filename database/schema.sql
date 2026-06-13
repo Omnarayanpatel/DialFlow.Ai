@@ -149,6 +149,57 @@ ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS total_break_duration INTEGER N
 ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE agent_breaks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 
+INSERT INTO downtime_requests (
+  agent_id,
+  employee_id,
+  issue_type,
+  comment,
+  status,
+  requested_at,
+  approved_at,
+  resolved_at,
+  duration_seconds,
+  created_at,
+  updated_at
+)
+SELECT
+  migrated.user_id,
+  migrated.employee_id,
+  'Session',
+  migrated.comment,
+  'resolved',
+  migrated.break_start_time,
+  migrated.break_start_time,
+  migrated.resolved_at,
+  migrated.duration_seconds,
+  migrated.created_at,
+  CURRENT_TIMESTAMP
+FROM (
+  SELECT
+    b.user_id,
+    COALESCE(u.employee_id, '') AS employee_id,
+    COALESCE(NULLIF(TRIM(b.break_remark), ''), 'Session') AS comment,
+    b.break_start_time,
+    COALESCE(b.break_end_time, b.updated_at, b.created_at, CURRENT_TIMESTAMP) AS resolved_at,
+    GREATEST(
+      EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, b.updated_at, b.created_at, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+      0
+    ) AS duration_seconds,
+    COALESCE(b.created_at, b.break_start_time, CURRENT_TIMESTAMP) AS created_at
+  FROM agent_breaks b
+  LEFT JOIN users u ON u.id = b.user_id
+  WHERE LOWER(TRIM(COALESCE(b.break_reason, ''))) IN ('session', 'session break')
+    AND b.user_id IS NOT NULL
+    AND b.break_start_time IS NOT NULL
+) migrated
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM downtime_requests dr
+  WHERE dr.agent_id = migrated.user_id
+    AND dr.issue_type = 'Session'
+    AND dr.requested_at = migrated.break_start_time
+);
+
 CREATE TABLE IF NOT EXISTS responses (
   id SERIAL PRIMARY KEY,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

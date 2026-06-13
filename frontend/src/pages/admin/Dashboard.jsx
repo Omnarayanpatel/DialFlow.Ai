@@ -10,6 +10,7 @@ import { getAdminLeaderboard } from "../../services/rankingService";
 import { createDowntimeSocket } from "../../services/socketService";
 import {
   approveDowntimeRequest,
+  getDowntimeHistory,
   getDowntimeReport,
   getDowntimeRequests,
   rejectDowntimeRequest,
@@ -76,6 +77,8 @@ const downtimeSocketEvents = [
   "downtime_rejected",
   "downtime_resolved",
 ];
+
+const downtimeIssueTypes = ["System Issue", "Internet Issue", "Portal Issue", "Dialer Issue", "Session"];
 
 const formatDate = (date) =>
   new Intl.DateTimeFormat("en-IN", {
@@ -270,6 +273,47 @@ const formatTimeOnly = (value) => {
   });
 };
 
+const getDowntimeDurationSeconds = (item = {}) => {
+  const storedDuration = Number(item.durationSeconds || item.runningDurationSeconds || 0);
+
+  if (storedDuration > 0) {
+    return storedDuration;
+  }
+
+  const start = new Date(item.startTime || item.approvedAt).getTime();
+  const end = new Date(item.endTime || item.resolvedAt).getTime();
+
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+    return 0;
+  }
+
+  return Math.floor((end - start) / 1000);
+};
+
+const buildDowntimeSummary = (records = []) => {
+  const summary = {
+    total: records.length,
+    pending: 0,
+    approved: 0,
+    resolved: 0,
+    rejected: 0,
+    totalSeconds: 0,
+  };
+
+  records.forEach((item) => {
+    const status = String(item.status || "").toLowerCase();
+
+    if (status === "pending") summary.pending += 1;
+    if (status === "approved") summary.approved += 1;
+    if (status === "resolved") summary.resolved += 1;
+    if (status === "rejected") summary.rejected += 1;
+
+    summary.totalSeconds += getDowntimeDurationSeconds(item);
+  });
+
+  return summary;
+};
+
 const escapeHtml = (value) =>
   String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -289,7 +333,9 @@ const AdminDashboard = () => {
     ? "manage-admins"
     : location.pathname.includes("/audit-logs")
       ? "audit-logs"
-      : "overview";
+      : location.pathname.includes("/downtime-history")
+        ? "downtime-history"
+        : "overview";
   const [activeView, setActiveView] = useState(initialView);
   const [responses, setResponses] = useState([]);
   const [allAgents, setAllAgents] = useState([]);
@@ -387,6 +433,13 @@ const AdminDashboard = () => {
   const [downtimeReportGenerated, setDowntimeReportGenerated] = useState(false);
   const [downtimeReportRecords, setDowntimeReportRecords] = useState([]);
   const [isDowntimeReportLoading, setIsDowntimeReportLoading] = useState(false);
+  const [downtimeHistoryDateFrom, setDowntimeHistoryDateFrom] = useState("2026-04-21");
+  const [downtimeHistoryDateTo, setDowntimeHistoryDateTo] = useState("2026-04-28");
+  const [downtimeHistoryAgent, setDowntimeHistoryAgent] = useState("all");
+  const [downtimeHistoryStatus, setDowntimeHistoryStatus] = useState("all");
+  const [downtimeHistoryIssueType, setDowntimeHistoryIssueType] = useState("all");
+  const [downtimeHistoryRecords, setDowntimeHistoryRecords] = useState([]);
+  const [isDowntimeHistoryLoading, setIsDowntimeHistoryLoading] = useState(false);
   const [agentForm, setAgentForm] = useState({
     employeeId: "",
     name: "",
@@ -402,6 +455,8 @@ const AdminDashboard = () => {
       setActiveView("manage-admins");
     } else if (location.pathname.includes("/audit-logs")) {
       setActiveView("audit-logs");
+    } else if (location.pathname.includes("/downtime-history")) {
+      setActiveView("downtime-history");
     } else if (location.pathname === "/super-admin" || location.pathname === "/admin") {
       setActiveView("overview");
     }
@@ -452,6 +507,14 @@ const AdminDashboard = () => {
     return agents;
   }, [agents, allAgents]);
 
+  const downtimeHistoryAgentOptions = useMemo(() => {
+    if (allAgents.length) {
+      return allAgents.map((agent) => [agent.employee_id || agent.id, agent.name || agent.employee_id || agent.id]);
+    }
+
+    return agents;
+  }, [agents, allAgents]);
+
   const pendingDowntimeRequests = useMemo(
     () => downtimeRequests.filter((request) => request.status === "pending"),
     [downtimeRequests]
@@ -460,6 +523,11 @@ const AdminDashboard = () => {
   const activeDowntimeRequests = useMemo(
     () => downtimeRequests.filter((request) => request.status === "approved"),
     [downtimeRequests]
+  );
+
+  const downtimeHistorySummary = useMemo(
+    () => buildDowntimeSummary(downtimeHistoryRecords),
+    [downtimeHistoryRecords]
   );
 
   const latestDowntimeNotification = downtimeNotifications[0];
@@ -828,6 +896,14 @@ const AdminDashboard = () => {
     employeeId: downtimeReportAgent,
   });
 
+  const buildDowntimeHistoryParams = () => ({
+    dateFrom: downtimeHistoryDateFrom,
+    dateTo: downtimeHistoryDateTo,
+    employeeId: downtimeHistoryAgent,
+    status: downtimeHistoryStatus,
+    issueType: downtimeHistoryIssueType,
+  });
+
   const buildRankingReportParams = () => ({
     startDate: rankingReportDateFrom,
     endDate: rankingReportDateTo,
@@ -931,7 +1007,25 @@ const AdminDashboard = () => {
     if (activeView === "downtime") {
       loadDowntimeRequests();
     }
+
+    if (activeView === "downtime-history") {
+      loadDowntimeHistoryRows();
+    }
   }, [activeView, auditFilters, isSuperAdmin, token]);
+
+  useEffect(() => {
+    if (activeView === "downtime-history" && token) {
+      loadDowntimeHistoryRows();
+    }
+  }, [
+    activeView,
+    token,
+    downtimeHistoryDateFrom,
+    downtimeHistoryDateTo,
+    downtimeHistoryAgent,
+    downtimeHistoryStatus,
+    downtimeHistoryIssueType,
+  ]);
 
   useEffect(() => {
     if (token) {
@@ -1204,6 +1298,19 @@ const AdminDashboard = () => {
       setFeedback(error.message || "Unable to generate downtime report.");
     } finally {
       setIsDowntimeReportLoading(false);
+    }
+  };
+
+  const loadDowntimeHistoryRows = async () => {
+    setIsDowntimeHistoryLoading(true);
+    try {
+      const data = await getDowntimeHistory(token, buildDowntimeHistoryParams());
+      setDowntimeHistoryRecords(data.records || []);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(error.message || "Unable to load downtime history.");
+    } finally {
+      setIsDowntimeHistoryLoading(false);
     }
   };
 
@@ -1776,9 +1883,15 @@ const AdminDashboard = () => {
         navigate("/super-admin/manage-admins");
       } else if (id === "audit-logs") {
         navigate("/super-admin/audit-logs");
+      } else if (id === "downtime-history") {
+        navigate("/super-admin/downtime-history");
       } else {
         navigate("/super-admin");
       }
+    } else if (id === "downtime-history") {
+      navigate("/admin/downtime-history");
+    } else if (id === "overview") {
+      navigate("/admin");
     }
   };
 
@@ -2257,6 +2370,7 @@ const AdminDashboard = () => {
               ["ranking", "Rankings", "chart"],
               ["responses", "All Responses", "list"],
               ["downtime", "Downtime Requests", "list"],
+              ["downtime-history", "Downtime History", "list"],
               ["agents", "Agents", "user"],
               ["reports", "Reports", "list"],
 
@@ -2879,6 +2993,115 @@ const AdminDashboard = () => {
                         </td>
                       </tr>
                     ) : null}
+                  </tbody>
+                </table>
+              </section>
+            </>
+          ) : activeView === "downtime-history" ? (
+            <>
+              <div className="admin-toolbar" style={{ display: "flex", justifyContent: "space-between", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: "28px", fontWeight: 700 }}>Downtime History</h1>
+                  <div style={{ marginTop: "8px", color: "#9da6c3", fontSize: "16px" }}>
+                    Filtered downtime records | All agents
+                  </div>
+                </div>
+                <button type="button" onClick={loadDowntimeHistoryRows} disabled={isDowntimeHistoryLoading} style={ghostButton}>
+                  {isDowntimeHistoryLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              <section className="admin-soft-panel" style={{ ...panel, marginTop: "28px", padding: "24px" }}>
+                <div className="admin-filter-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "14px" }}>
+                  <input style={input} type="date" value={downtimeHistoryDateFrom} onChange={(event) => setDowntimeHistoryDateFrom(event.target.value)} aria-label="Date From" />
+                  <input style={input} type="date" value={downtimeHistoryDateTo} onChange={(event) => setDowntimeHistoryDateTo(event.target.value)} aria-label="Date To" />
+                  <select className="admin-select" style={input} value={downtimeHistoryAgent} onChange={(event) => setDowntimeHistoryAgent(event.target.value)}>
+                    <option value="all">All agents</option>
+                    {downtimeHistoryAgentOptions.map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  <select className="admin-select" style={input} value={downtimeHistoryStatus} onChange={(event) => setDowntimeHistoryStatus(event.target.value)}>
+                    <option value="all">All status</option>
+                    <option value="pending">Pending Approval</option>
+                    <option value="approved">Approved / Active</option>
+                    <option value="resolved">Resolved</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                  <select className="admin-select" style={input} value={downtimeHistoryIssueType} onChange={(event) => setDowntimeHistoryIssueType(event.target.value)}>
+                    <option value="all">All issue types</option>
+                    {downtimeIssueTypes.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </section>
+
+              <section className="admin-kpi-grid" style={{ marginTop: "28px", display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "16px" }}>
+                {[
+                  ["Total Requests", downtimeHistorySummary.total, "#c681ff"],
+                  ["Pending", downtimeHistorySummary.pending, "#ffd02d"],
+                  ["Approved", downtimeHistorySummary.approved, "#27d8ff"],
+                  ["Resolved", downtimeHistorySummary.resolved, "#35e5a7"],
+                  ["Rejected", downtimeHistorySummary.rejected, "#ff7685"],
+                ].map(([title, value, accent]) => (
+                  <article key={title} style={{ ...panel, padding: "20px 22px", minHeight: "138px", borderTop: `3px solid ${accent}` }}>
+                    <div style={{ color: "#8f98b7", fontSize: "14px", lineHeight: 1.1 }}>{title}</div>
+                    <div style={{ marginTop: "14px", color: accent, fontSize: "32px", lineHeight: 1 }}>{value}</div>
+                  </article>
+                ))}
+              </section>
+
+              <section style={{ ...panel, marginTop: "30px", padding: "26px", overflowX: "auto" }}>
+                <table className="admin-polished-table" style={{ width: "100%", minWidth: "1280px", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ color: "#6d728d", textAlign: "left", letterSpacing: "0.05em" }}>
+                      {["AGENT NAME", "EMPLOYEE ID", "DATE", "ISSUE TYPE", "COMMENT", "STATUS", "REQUESTED TIME", "APPROVED TIME", "END TIME", "DURATION"].map((heading) => (
+                        <th key={heading} style={{ padding: "13px 12px", borderBottom: "1px solid rgba(122, 73, 255, 0.24)" }}>{heading}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isDowntimeHistoryLoading ? (
+                      <tr>
+                        <td colSpan="10" style={{ padding: "24px 12px" }}>
+                          <div className="admin-empty-state">Loading downtime history...</div>
+                        </td>
+                      </tr>
+                    ) : downtimeHistoryRecords.length ? (
+                      downtimeHistoryRecords.map((item) => {
+                        const tone = statusTone(item.status);
+
+                        return (
+                          <tr key={item.id} style={{ borderBottom: "1px solid rgba(122, 73, 255, 0.14)" }}>
+                            <td style={{ padding: "14px 12px" }}>{item.agentName || "NA"}</td>
+                            <td style={{ padding: "14px 12px" }}>{item.employeeId || "NA"}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatReportDateOnly(item.requestedAt)}</td>
+                            <td style={{ padding: "14px 12px", color: "#9bdcff" }}>{item.issueType || "NA"}</td>
+                            <td style={{ padding: "14px 12px", maxWidth: "280px", color: "#cdd3ea" }}>{item.comment || "NA"}</td>
+                            <td style={{ padding: "14px 12px" }}>
+                              <span style={{ display: "inline-flex", padding: "6px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
+                                {item.status || "NA"}
+                              </span>
+                            </td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.requestedTime || item.requestedAt)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.approvedTime || item.approvedAt)}</td>
+                            <td style={{ padding: "14px 12px" }}>{formatTimeOnly(item.endTime || item.resolvedAt)}</td>
+                            <td style={{ padding: "14px 12px", color: "#35e5a7" }}>{formatDurationHuman(getDowntimeDurationSeconds(item))}</td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan="10" style={{ padding: "22px 12px" }}>
+                          <div className="admin-empty-state">No downtime rows match these filters.</div>
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </section>

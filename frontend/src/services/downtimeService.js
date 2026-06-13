@@ -41,6 +41,15 @@ export const getMyCurrentDowntimeRequest = async (token) => {
   return response.data;
 };
 
+export const getMyDowntimeHistory = async (token, params = {}) => {
+  const response = await apiRequest(`/downtime/me/history${toQueryString(params)}`, {
+    method: "GET",
+    token,
+  });
+
+  return response.data;
+};
+
 export const approveDowntimeRequest = async (id, token) => {
   const response = await apiRequest(`/downtime/${id}/approve`, {
     method: "POST",
@@ -70,6 +79,15 @@ export const resolveDowntimeRequest = async (id, token) => {
 
 export const getDowntimeReport = async (token, params = {}) => {
   const response = await apiRequest(`/downtime/report${toQueryString(params)}`, {
+    method: "GET",
+    token,
+  });
+
+  return response.data;
+};
+
+export const getDowntimeHistory = async (token, params = {}) => {
+  const response = await apiRequest(`/downtime/history${toQueryString(params)}`, {
     method: "GET",
     token,
   });

@@ -4,7 +4,7 @@ import LogoutConfirmationModal from "../../components/common/LogoutConfirmationM
 import ThemeToggle from "../../components/common/ThemeToggle";
 import AgentRanking from "../../components/ranking/AgentRanking";
 import { clearAgentSessionCache, updateUserStatus } from "../../services/authService";
-import { createDowntimeRequest, getMyCurrentDowntimeRequest } from "../../services/downtimeService";
+import { createDowntimeRequest, getMyCurrentDowntimeRequest, getMyDowntimeHistory, resolveDowntimeRequest } from "../../services/downtimeService";
 import { createAgentResponse, getAgentDashboardData, updateAgentHistoryEntry } from "../../services/responseService";
 import { createDowntimeSocket } from "../../services/socketService";
 import { useStore } from "../../store/useStore";
@@ -74,9 +74,9 @@ const languageOptions = [
   "Other",
 ];
 
-const breakReasonOptions = ["Lunch Break", "Tea Break", "Bio Break", "Session"];
-const breakReasonsWithRemark = new Set(["Session"]);
-const downtimeIssueTypes = ["System Issue", "Internet Issue", "Portal Issue", "Dialer Issue"];
+const breakReasonOptions = ["Lunch Break", "Tea Break", "Bio Break"];
+const breakReasonsWithRemark = new Set();
+const downtimeIssueTypes = ["System Issue", "Internet Issue", "Portal Issue", "Dialer Issue", "Session"];
 const downtimeSocketEvents = [
   "new_downtime_request",
   "downtime_approved",
@@ -103,6 +103,8 @@ const fallbackSession = {
   breakCountToday: 0,
   totalBreakDurationToday: 0,
   total_break_time: 0,
+  downtimeDurationToday: 0,
+  downtime_duration_today: 0,
   staffTimeToday: 0,
   staff_time: 0,
   currentBreakDuration: 0,
@@ -226,6 +228,101 @@ const formatStatusDateTime = (value) => {
     second: "2-digit",
     hour12: true,
   }).format(parsed);
+};
+
+const formatStatusTime = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "NA";
+  }
+
+  return new Intl.DateTimeFormat("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(parsed);
+};
+
+const formatDateOnly = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "NA";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  })
+    .format(parsed)
+    .replace(/\//g, "-");
+};
+
+const formatTimeOnly = (value) => {
+  if (!value) {
+    return "NA";
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "NA";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(parsed);
+};
+
+const getDowntimeDurationSeconds = (item = {}) => {
+  const storedDuration = Number(item.durationSeconds || item.runningDurationSeconds || 0);
+
+  if (storedDuration > 0) {
+    return storedDuration;
+  }
+
+  const start = new Date(item.startTime || item.approvedAt).getTime();
+  const end = new Date(item.endTime || item.resolvedAt).getTime();
+
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+    return 0;
+  }
+
+  return Math.floor((end - start) / 1000);
+};
+
+const buildDowntimeSummary = (records = []) => {
+  const summary = {
+    total: records.length,
+    pending: 0,
+    approved: 0,
+    resolved: 0,
+    rejected: 0,
+  };
+
+  records.forEach((item) => {
+    const status = String(item.status || "").toLowerCase();
+
+    if (status === "pending") summary.pending += 1;
+    if (status === "approved") summary.approved += 1;
+    if (status === "resolved") summary.resolved += 1;
+    if (status === "rejected") summary.rejected += 1;
+  });
+
+  return summary;
 };
 
 const downtimeStatusLabel = (status) => {
@@ -407,6 +504,7 @@ const Dashboard = () => {
   const [downtimeIssueType, setDowntimeIssueType] = useState("System Issue");
   const [downtimeComment, setDowntimeComment] = useState("");
   const [downtimeSaving, setDowntimeSaving] = useState(false);
+  const [downtimeResolving, setDowntimeResolving] = useState(false);
   const [currentDowntimeRequest, setCurrentDowntimeRequest] = useState(null);
 
   const [referenceId, setReferenceId] = useState("");
@@ -435,6 +533,14 @@ const Dashboard = () => {
     callStatus: "all",
     disposition: "all",
   });
+  const [downtimeHistoryFilters, setDowntimeHistoryFilters] = useState({
+    dateFrom: "",
+    dateTo: "",
+    status: "all",
+    issueType: "all",
+  });
+  const [downtimeHistoryRecords, setDowntimeHistoryRecords] = useState([]);
+  const [downtimeHistoryLoading, setDowntimeHistoryLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [historyEditTarget, setHistoryEditTarget] = useState(null);
@@ -455,6 +561,7 @@ const Dashboard = () => {
     setSummary(fallbackSummary);
     setRows(fallbackRows);
     setHistoryRecords([]);
+    setDowntimeHistoryRecords([]);
     setHistoryPagination({
       page: 1,
       pageSize: 10,
@@ -468,6 +575,7 @@ const Dashboard = () => {
     setIsDowntimeModalOpen(false);
     setDowntimeIssueType("System Issue");
     setDowntimeComment("");
+    setDowntimeResolving(false);
     setCurrentDowntimeRequest(null);
     setIsSessionHydrated(false);
   };
@@ -645,6 +753,47 @@ const Dashboard = () => {
   ]);
 
   useEffect(() => {
+    let ignore = false;
+
+    const loadDowntimeHistory = async () => {
+      if (!token) {
+        setDowntimeHistoryRecords([]);
+        return;
+      }
+
+      setDowntimeHistoryLoading(true);
+      try {
+        const data = await getMyDowntimeHistory(token, downtimeHistoryFilters);
+
+        if (!ignore) {
+          setDowntimeHistoryRecords(data.records || []);
+        }
+      } catch (_error) {
+        if (!ignore) {
+          setDowntimeHistoryRecords([]);
+        }
+      } finally {
+        if (!ignore) {
+          setDowntimeHistoryLoading(false);
+        }
+      }
+    };
+
+    loadDowntimeHistory();
+
+    return () => {
+      ignore = true;
+    };
+  }, [
+    token,
+    dashboardSyncKey,
+    downtimeHistoryFilters.dateFrom,
+    downtimeHistoryFilters.dateTo,
+    downtimeHistoryFilters.status,
+    downtimeHistoryFilters.issueType,
+  ]);
+
+  useEffect(() => {
     if (!token) {
       return undefined;
     }
@@ -658,6 +807,7 @@ const Dashboard = () => {
 
       if (request.agentId === user.id || request.employeeId === user.employeeId) {
         setDowntimeRequestFromServer(request);
+        setDashboardSyncKey((current) => current + 1);
       }
     };
 
@@ -732,6 +882,7 @@ const Dashboard = () => {
   const displayedSession = isSessionHydrated ? sessionStats : fallbackSession;
   const serverTotalLoginDurationToday = displayedSession.total_login_time ?? displayedSession.totalLoginDurationToday;
   const serverTotalBreakDurationToday = displayedSession.total_break_time ?? displayedSession.totalBreakDurationToday;
+  const serverDowntimeDurationToday = displayedSession.downtime_duration_today ?? displayedSession.downtimeDurationToday;
   const serverStaffTimeToday = displayedSession.staff_time ?? displayedSession.staffTimeToday;
   const serverCurrentBreakDuration = displayedSession.currentBreakDuration;
   const currentBreakStatus = displayedSession.current_break_status || (displayedSession.status === "break" ? "break" : "none");
@@ -742,11 +893,13 @@ const Dashboard = () => {
       : 0;
   const isActiveSession = displayedSession.status === "online" || displayedSession.status === "break";
   const isOnBreak = displayedSession.status === "break" || currentBreakStatus === "break";
+  const currentDowntimeStatus = String(currentDowntimeRequest?.status || "").toLowerCase();
   const visualTotalLoginDurationToday = toSeconds(serverTotalLoginDurationToday) + (displayedSession.status === "online" ? secondsSinceBackendSync : 0);
   const visualTotalBreakDurationToday = toSeconds(serverTotalBreakDurationToday) + (isOnBreak ? secondsSinceBackendSync : 0);
+  const visualDowntimeDurationToday = toSeconds(serverDowntimeDurationToday) + (currentDowntimeStatus === "approved" ? secondsSinceBackendSync : 0);
+  const visualTotalWorkHoursToday = visualTotalLoginDurationToday + visualDowntimeDurationToday;
   const visualStaffTimeToday = toSeconds(serverStaffTimeToday) + (isActiveSession ? secondsSinceBackendSync : 0);
   const visualCurrentBreakDuration = toSeconds(serverCurrentBreakDuration) + (isOnBreak ? secondsSinceBackendSync : 0);
-  const currentDowntimeStatus = String(currentDowntimeRequest?.status || "").toLowerCase();
   const hasBlockingDowntimeRequest = currentDowntimeStatus === "pending" || currentDowntimeStatus === "approved";
   const currentDowntimeTone = downtimeStatusTone(currentDowntimeStatus);
   const currentDowntimeDuration = (() => {
@@ -765,6 +918,10 @@ const Dashboard = () => {
       toSeconds(currentDowntimeRequest.runningDurationSeconds)
     );
   })();
+  const downtimeHistorySummary = useMemo(
+    () => buildDowntimeSummary(downtimeHistoryRecords),
+    [downtimeHistoryRecords]
+  );
 
   const handleTogglePause = async () => {
     if (!isPaused) {
@@ -833,7 +990,7 @@ const Dashboard = () => {
     }
 
     if (!downtimeComment.trim()) {
-      setFeedback("Please add a comment for the system issue.");
+      setFeedback("Please add a comment for the downtime issue.");
       return;
     }
 
@@ -857,6 +1014,27 @@ const Dashboard = () => {
       setFeedback(error.message || "Unable to submit downtime request.");
     } finally {
       setDowntimeSaving(false);
+    }
+  };
+
+  const endDowntime = async () => {
+    if (!currentDowntimeRequest?.id || currentDowntimeStatus !== "approved") {
+      setFeedback("Only approved downtime can be ended.");
+      return;
+    }
+
+    setDowntimeResolving(true);
+    setFeedback("");
+
+    try {
+      const resolvedRequest = await resolveDowntimeRequest(currentDowntimeRequest.id, token);
+      setDowntimeRequestFromServer(resolvedRequest);
+      setDashboardSyncKey((current) => current + 1);
+      setFeedback("Downtime resolved.");
+    } catch (error) {
+      setFeedback(error.message || "Unable to end downtime.");
+    } finally {
+      setDowntimeResolving(false);
     }
   };
 
@@ -1342,7 +1520,7 @@ const Dashboard = () => {
                   cursor: hasBlockingDowntimeRequest ? "not-allowed" : "pointer",
                 }}
               >
-                System Issue
+                Downtime Issue
               </button>
             </div>
           </div>
@@ -1487,6 +1665,121 @@ const Dashboard = () => {
                   ))}
                 </select>
               </div>
+
+              <section style={{ marginTop: "28px", display: "grid", gap: "18px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "16px", flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: "22px", fontWeight: 600 }}>Downtime history</h2>
+                    <div style={{ marginTop: "6px", color: "#8f88aa", fontSize: "14px" }}>Only your downtime requests are shown</div>
+                  </div>
+                  <div className="history-filter-grid" style={{ flex: "1 1 520px", marginTop: 0 }}>
+                    <input
+                      className="crm-input"
+                      type="date"
+                      style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                      value={downtimeHistoryFilters.dateFrom}
+                      onChange={(event) => setDowntimeHistoryFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+                      aria-label="Downtime date from"
+                    />
+                    <input
+                      className="crm-input"
+                      type="date"
+                      style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                      value={downtimeHistoryFilters.dateTo}
+                      onChange={(event) => setDowntimeHistoryFilters((current) => ({ ...current, dateTo: event.target.value }))}
+                      aria-label="Downtime date to"
+                    />
+                    <select
+                      className="crm-select"
+                      style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                      value={downtimeHistoryFilters.status}
+                      onChange={(event) => setDowntimeHistoryFilters((current) => ({ ...current, status: event.target.value }))}
+                    >
+                      <option value="all">All status</option>
+                      <option value="pending">Pending</option>
+                      <option value="approved">Approved</option>
+                      <option value="resolved">Resolved</option>
+                      <option value="rejected">Rejected</option>
+                    </select>
+                    <select
+                      className="crm-select"
+                      style={{ ...fieldBase, fontSize: "15px", padding: "12px 14px" }}
+                      value={downtimeHistoryFilters.issueType}
+                      onChange={(event) => setDowntimeHistoryFilters((current) => ({ ...current, issueType: event.target.value }))}
+                    >
+                      <option value="all">All issue types</option>
+                      {downtimeIssueTypes.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="agent-summary-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "14px" }}>
+                  {[
+                    ["Total Requests", downtimeHistorySummary.total, "#b585ff"],
+                    ["Pending", downtimeHistorySummary.pending, "#ffd02d"],
+                    ["Approved", downtimeHistorySummary.approved, "#35e5a7"],
+                    ["Resolved", downtimeHistorySummary.resolved, "#9bdcff"],
+                    ["Rejected", downtimeHistorySummary.rejected, "#ff7685"],
+                  ].map(([title, value, accent]) => (
+                    <article key={title} style={{ ...panel, padding: "18px", minHeight: "118px", borderTop: `3px solid ${accent}` }}>
+                      <div style={{ color: "#8f88aa", fontSize: "13px", lineHeight: 1.15 }}>{title}</div>
+                      <div style={{ marginTop: "12px", color: accent, fontSize: "30px", lineHeight: 1 }}>{value}</div>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="history-table-wrap">
+                  <table style={{ width: "100%", minWidth: "1040px", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ color: "#8d86aa", textAlign: "left", fontSize: "14px" }}>
+                        {["Date", "Issue Type", "Comment", "Status", "Requested Time", "Approved Time", "End Time", "Duration"].map((heading) => (
+                          <th key={heading} style={{ padding: "14px 12px", borderBottom: "1px solid rgba(114, 74, 246, 0.22)" }}>
+                            {heading}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {downtimeHistoryLoading ? (
+                        <tr>
+                          <td colSpan="8" style={{ padding: "24px 12px", color: "#a9a1c3", textAlign: "center" }}>
+                            Loading downtime history...
+                          </td>
+                        </tr>
+                      ) : downtimeHistoryRecords.length ? (
+                        downtimeHistoryRecords.map((item) => {
+                          const tone = downtimeStatusTone(item.status);
+
+                          return (
+                            <tr key={item.id} style={{ borderBottom: "1px solid rgba(114, 74, 246, 0.16)" }}>
+                              <td style={{ padding: "16px 12px", color: "#c8c1df" }}>{formatDateOnly(item.requestedAt)}</td>
+                              <td style={{ padding: "16px 12px", color: "#9bdcff" }}>{item.issueType || "NA"}</td>
+                              <td style={{ padding: "16px 12px", maxWidth: "280px", color: "#c8c1df" }}>{item.comment || "NA"}</td>
+                              <td style={{ padding: "16px 12px" }}>
+                                <span style={{ display: "inline-flex", padding: "7px 12px", borderRadius: "999px", color: tone.color, background: tone.bg, border: `1px solid ${tone.border}` }}>
+                                  {downtimeStatusLabel(item.status)}
+                                </span>
+                              </td>
+                              <td style={{ padding: "16px 12px" }}>{formatTimeOnly(item.requestedTime || item.requestedAt)}</td>
+                              <td style={{ padding: "16px 12px" }}>{formatTimeOnly(item.approvedTime || item.approvedAt)}</td>
+                              <td style={{ padding: "16px 12px" }}>{formatTimeOnly(item.endTime || item.resolvedAt)}</td>
+                              <td style={{ padding: "16px 12px", color: "#35e5a7" }}>{formatDuration(getDowntimeDurationSeconds(item))}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan="8" style={{ padding: "24px 12px", color: "#a9a1c3", textAlign: "center" }}>
+                            No downtime history found.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
               <div className="history-table-wrap" style={{ marginTop: "24px" }}>
                 <table style={{ width: "100%", minWidth: "1040px", borderCollapse: "collapse" }}>
@@ -1729,9 +2022,9 @@ const Dashboard = () => {
               <div style={{ marginTop: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
                 {[
                   ["Issue Type", currentDowntimeRequest.issueType],
-                  ["Requested Time", formatStatusDateTime(currentDowntimeRequest.requestedAt)],
+                  ["Requested Time", formatStatusTime(currentDowntimeRequest.requestedAt)],
                   ["Approved By", currentDowntimeRequest.approvedByName || "NA"],
-                  ["Approved Time", formatStatusDateTime(currentDowntimeRequest.approvedAt)],
+                  ["Approved Time", formatStatusTime(currentDowntimeRequest.approvedAt)],
                   [
                     currentDowntimeStatus === "resolved" ? "Final Duration" : "Running Duration",
                     currentDowntimeStatus === "pending" || currentDowntimeStatus === "rejected" ? "NA" : formatDuration(currentDowntimeDuration),
@@ -1744,8 +2037,42 @@ const Dashboard = () => {
                   </div>
                 ))}
               </div>
+
+              {currentDowntimeStatus === "approved" ? (
+                <div style={{ marginTop: "18px", display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={endDowntime}
+                    disabled={downtimeResolving}
+                    style={{
+                      ...modalButton,
+                      border: "1px solid rgba(53, 229, 167, 0.42)",
+                      background: "rgba(53, 229, 167, 0.14)",
+                      color: "#35e5a7",
+                      opacity: downtimeResolving ? 0.55 : 1,
+                    }}
+                  >
+                    {downtimeResolving ? "Ending..." : "End Downtime"}
+                  </button>
+                </div>
+              ) : null}
             </section>
-          ) : null}
+          ) : (
+            <section
+              style={{
+                ...panel,
+                marginTop: "24px",
+                padding: "20px 24px",
+                borderColor: "rgba(140, 143, 173, 0.24)",
+                background: "rgba(19, 18, 37, 0.82)",
+              }}
+            >
+              <div style={{ color: "#9da6c3", fontSize: "14px", letterSpacing: "0.06em" }}>DOWNTIME REQUEST STATUS</div>
+              <div style={{ marginTop: "10px", color: "#f5f1ff", fontSize: "18px", fontWeight: 700 }}>
+                No active downtime requests today.
+              </div>
+            </section>
+          )}
 
           <section
             className="agent-summary-grid"
@@ -1773,7 +2100,7 @@ const Dashboard = () => {
               { title: "STAFF TIME", value: formatDuration(visualStaffTimeToday), note: `9h shift target\nLogin ${formatTime(sessionLoginTime)}`, accent: "#9bdcff" },
               { title: "TOTAL LOGIN TIME", value: formatDuration(visualTotalLoginDurationToday), note: "Server-calculated time", accent: "#54ebb2" },
               { title: "BREAK TIME", value: formatDuration(visualTotalBreakDurationToday), note: currentBreakStatus === "break" ? `Current ${formatDuration(visualCurrentBreakDuration)}` : "Server total", accent: "#ffa500" },
-              { title: "BREAK COUNT TODAY", value: displayedSession.breakCountToday, note: `${displayedSession.activeSessionCount || 0} active session${displayedSession.activeSessionCount === 1 ? "" : "s"}`, accent: "#ff7a85" },
+              { title: "TOTAL WORK HOURS TODAY", value: formatDuration(visualTotalWorkHoursToday), note: `Login + downtime\nDowntime ${formatDuration(visualDowntimeDurationToday)}`, accent: "#ff7a85" },
             ].map((item) => (
               <article style={{ ...panel, padding: "22px 24px" }} key={item.title}>
                 <div style={{ fontSize: "16px", color: "#a9a1c3", lineHeight: 1.1, maxWidth: "120px" }}>
@@ -2264,7 +2591,7 @@ const Dashboard = () => {
               boxShadow: breakModalTheme.shadow,
             }}
           >
-            <h2 style={{ margin: 0, fontSize: "22px", color: breakModalTheme.heading }}>System Issue</h2>
+            <h2 style={{ margin: 0, fontSize: "22px", color: breakModalTheme.heading }}>Downtime Issue</h2>
             <div style={{ marginTop: "10px", color: breakModalTheme.secondary, fontSize: "14px", lineHeight: 1.45 }}>
               Submit a downtime request for admin approval. Downtime starts only after approval.
             </div>

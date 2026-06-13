@@ -57,7 +57,7 @@ const normalizeRole = (role) => {
 const isAdminRole = (role) => role === "admin" || role === "super_admin";
 
 const normalizeBreakDetails = ({ reason, remark } = {}) => {
-  const allowedReasons = new Set(["Lunch Break", "Tea Break", "Bio Break", "Session"]);
+  const allowedReasons = new Set(["Lunch Break", "Tea Break", "Bio Break"]);
   const cleanReason = String(reason || "").trim();
   const cleanRemark = String(remark || "").trim();
 
@@ -490,7 +490,21 @@ const getAllAgents = async (req, res, next) => {
     }
 
     const result = await query(
-      `WITH session_metrics AS (
+      `WITH session_break_metrics AS (
+         SELECT
+           b.session_id,
+           COUNT(*)::int AS break_count,
+           COALESCE(SUM(
+             GREATEST(
+               EXTRACT(EPOCH FROM (COALESCE(b.break_end_time, CURRENT_TIMESTAMP) - b.break_start_time))::int,
+               0
+             )
+           ), 0)::int AS total_break_duration
+         FROM agent_breaks b
+         WHERE LOWER(TRIM(COALESCE(b.break_reason, ''))) NOT IN ('session', 'session break')
+         GROUP BY b.session_id
+       ),
+       session_metrics AS (
          SELECT
            user_id,
            MIN(login_time) FILTER (WHERE logout_time IS NULL) AS login_time,
@@ -503,26 +517,17 @@ const getAllAgents = async (req, res, next) => {
            COALESCE(SUM(
              GREATEST(
                EXTRACT(EPOCH FROM (COALESCE(logout_time, CURRENT_TIMESTAMP) - login_time))::int
-                 - total_break_duration
-                 - CASE
-                     WHEN logout_time IS NULL AND break_start_time IS NOT NULL
-                       THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
-                     ELSE 0
-                 END,
+                 - COALESCE(sbm.total_break_duration, 0),
                0
              )
            ) FILTER (WHERE logout_time IS NULL), 0)::int AS total_login_duration,
-           COALESCE(SUM(break_count) FILTER (WHERE logout_time IS NULL), 0)::int AS break_count,
-           COALESCE(SUM(
-             total_break_duration + CASE
-               WHEN logout_time IS NULL AND break_start_time IS NOT NULL
-                 THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
-               ELSE 0
-             END
-           ) FILTER (WHERE logout_time IS NULL), 0)::int AS total_break_duration,
+           COALESCE(SUM(COALESCE(sbm.break_count, 0)) FILTER (WHERE logout_time IS NULL), 0)::int AS break_count,
+           COALESCE(SUM(COALESCE(sbm.total_break_duration, 0)) FILTER (WHERE logout_time IS NULL), 0)::int AS total_break_duration,
            COALESCE(SUM(
              CASE
-               WHEN logout_time IS NULL AND break_start_time IS NOT NULL
+               WHEN logout_time IS NULL
+                 AND break_start_time IS NOT NULL
+                 AND LOWER(TRIM(COALESCE(break_reason, ''))) NOT IN ('session', 'session break')
                  THEN GREATEST(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - break_start_time))::int, 0)
                ELSE 0
              END
@@ -536,7 +541,8 @@ const getAllAgents = async (req, res, next) => {
              FILTER (WHERE logout_time IS NULL AND LOWER(status) IN ('break', 'on break')))[1] AS break_remark,
            MAX(break_start_time) FILTER (WHERE logout_time IS NULL AND LOWER(status) IN ('break', 'on break')) AS break_start_time,
            MAX(break_end_time) FILTER (WHERE logout_time IS NULL) AS break_end_time
-         FROM agent_sessions
+         FROM agent_sessions s
+         LEFT JOIN session_break_metrics sbm ON sbm.session_id = s.id
          GROUP BY user_id
        ),
        today_agent_stats AS (

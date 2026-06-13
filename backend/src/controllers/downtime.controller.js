@@ -6,6 +6,7 @@ const ISSUE_TYPES = new Set([
   "Internet Issue",
   "Portal Issue",
   "Dialer Issue",
+  "Session",
 ]);
 
 const sanitizeDowntime = (row) => ({
@@ -65,6 +66,14 @@ const buildDowntimeFilters = (queryParams = {}) => {
 
   if (queryParams.employeeId && queryParams.employeeId !== "all") {
     addFilter("dr.employee_id = ?", String(queryParams.employeeId).trim());
+  }
+
+  if (queryParams.agentId && queryParams.agentId !== "all") {
+    addFilter("dr.agent_id = ?", queryParams.agentId);
+  }
+
+  if (queryParams.issueType && queryParams.issueType !== "all") {
+    addFilter("dr.issue_type = ?", String(queryParams.issueType).trim());
   }
 
   if (queryParams.dateFrom) {
@@ -144,8 +153,10 @@ const getMyCurrentDowntimeRequest = async (req, res, next) => {
        LEFT JOIN users agent ON agent.id = dr.agent_id
        LEFT JOIN users approver ON approver.id = dr.approved_by
        WHERE dr.agent_id = $1
+         AND dr.status IN ('pending', 'approved')
+         AND dr.requested_at::date = CURRENT_DATE
        ORDER BY
-         CASE WHEN dr.status IN ('pending', 'approved') THEN 0 ELSE 1 END,
+         CASE WHEN dr.status = 'approved' THEN 0 ELSE 1 END,
          dr.requested_at DESC
        LIMIT 1`,
       [req.user.id]
@@ -186,7 +197,9 @@ const createDowntimeRequest = async (req, res, next) => {
       const activeRequest = await client.query(
         `SELECT id, status
          FROM downtime_requests
-         WHERE agent_id = $1 AND status IN ('pending', 'approved')
+         WHERE agent_id = $1
+           AND status IN ('pending', 'approved')
+           AND requested_at::date = CURRENT_DATE
          LIMIT 1`,
         [req.user.id]
       );
@@ -316,7 +329,7 @@ const resolveDowntimeRequest = async (req, res, next) => {
 
     const downtimeRequest = await withTransaction(async (client) => {
       const current = await client.query(
-        "SELECT id, status, approved_at FROM downtime_requests WHERE id = $1 FOR UPDATE",
+        "SELECT id, agent_id, status, approved_at, requested_at FROM downtime_requests WHERE id = $1 FOR UPDATE",
         [id]
       );
 
@@ -330,6 +343,28 @@ const resolveDowntimeRequest = async (req, res, next) => {
         const error = new Error("Only active approved downtime can be resolved");
         error.statusCode = 400;
         throw error;
+      }
+
+      const isAdmin = req.user.role === "admin" || req.user.role === "super_admin";
+      const isOwningAgent = req.user.role === "agent" && Number(current.rows[0].agent_id) === Number(req.user.id);
+
+      if (!isAdmin && !isOwningAgent) {
+        const error = new Error("You can resolve only your own approved downtime");
+        error.statusCode = 403;
+        throw error;
+      }
+
+      if (isOwningAgent) {
+        const sameDay = await client.query(
+          "SELECT ($1::timestamp)::date = CURRENT_DATE AS is_today",
+          [current.rows[0].requested_at]
+        );
+
+        if (!sameDay.rows[0]?.is_today) {
+          const error = new Error("Only today's approved downtime can be resolved from the agent dashboard");
+          error.statusCode = 400;
+          throw error;
+        }
       }
 
       await client.query(
@@ -394,9 +429,97 @@ const getDowntimeReport = async (req, res, next) => {
   }
 };
 
+const getDowntimeHistory = async (req, res, next) => {
+  try {
+    const { params, whereSql } = buildDowntimeFilters({
+      ...req.query,
+      status: req.query.status || "all",
+      issueType: req.query.issueType || "all",
+    });
+
+    const result = await query(
+      `SELECT ${baseDowntimeSelect}
+       FROM downtime_requests dr
+       LEFT JOIN users agent ON agent.id = dr.agent_id
+       LEFT JOIN users approver ON approver.id = dr.approved_by
+       ${whereSql}
+       ORDER BY dr.requested_at DESC`,
+      params
+    );
+
+    const records = result.rows.map((row) => ({
+      ...sanitizeDowntime(row),
+      date: row.requested_at,
+      requestedTime: row.requested_at,
+      approvedTime: row.approved_at,
+      resolvedTime: row.resolved_at,
+      startTime: row.approved_at,
+      endTime: row.resolved_at,
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: "Downtime history fetched",
+      data: {
+        records,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMyDowntimeHistory = async (req, res, next) => {
+  try {
+    if (req.user.role !== "agent") {
+      return res.status(403).json({ success: false, message: "Only agents can view their downtime history" });
+    }
+
+    const { params, whereSql } = buildDowntimeFilters({
+      ...req.query,
+      agentId: req.user.id,
+      employeeId: "all",
+      status: req.query.status || "all",
+      issueType: req.query.issueType || "all",
+    });
+
+    const result = await query(
+      `SELECT ${baseDowntimeSelect}
+       FROM downtime_requests dr
+       LEFT JOIN users agent ON agent.id = dr.agent_id
+       LEFT JOIN users approver ON approver.id = dr.approved_by
+       ${whereSql}
+       ORDER BY dr.requested_at DESC`,
+      params
+    );
+
+    const records = result.rows.map((row) => ({
+      ...sanitizeDowntime(row),
+      date: row.requested_at,
+      requestedTime: row.requested_at,
+      approvedTime: row.approved_at,
+      resolvedTime: row.resolved_at,
+      startTime: row.approved_at,
+      endTime: row.resolved_at,
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: "Agent downtime history fetched",
+      data: {
+        records,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   approveDowntimeRequest,
   createDowntimeRequest,
+  getDowntimeHistory,
+  getMyDowntimeHistory,
   getDowntimeReport,
   getDowntimeRequests,
   getMyCurrentDowntimeRequest,

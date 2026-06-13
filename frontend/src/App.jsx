@@ -84,7 +84,15 @@ const App = () => {
           element={isAuthenticated && role === "super_admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
         />
         <Route 
+          path="/super-admin/downtime-history" 
+          element={isAuthenticated && role === "super_admin" ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
           path="/admin" 
+          element={isAuthenticated && (role === "admin" || role === "super_admin") ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/admin/downtime-history" 
           element={isAuthenticated && (role === "admin" || role === "super_admin") ? <AdminDashboard /> : <Navigate to="/login" />} 
         />
         <Route 
